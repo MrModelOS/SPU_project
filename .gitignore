@@ -1,0 +1,33 @@
+# Build artifacts
+*.o
+*.ko
+*.mod
+*.mod.c
+*.order
+*.symvers
+.*.cmd
+
+# Binaries
+emulator/spu_emulator
+sdk/libspu.so
+sdk/examples/spu_demo
+tools/spu_search
+benchmark/bench_search
+examples/semantic_search/spu_searchd
+
+# Kernel module build
+kernel_module/.cache.mk
+kernel_module/Module.symvers
+kernel_module/modules.order
+
+# Editor / IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+kernel_module/test_userspace
