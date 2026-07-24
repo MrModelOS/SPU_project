@@ -31,3 +31,4 @@ kernel_module/modules.order
 .DS_Store
 Thumbs.db
 kernel_module/test_userspace
+qemu/qemu-system-x86_64-spu

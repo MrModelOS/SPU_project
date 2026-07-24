@@ -259,10 +259,10 @@ python3 examples/spu_client.py
 - [x] SIMD-бенчмарк (scalar → AVX-512)
 - [x] HTTP REST API сервер
 - [x] Python-клиент
+- [x] QEMU virtual PCI device (`-device spu-pci`)
 - [ ] FPGA синтез (Verilog/VHDL)
 - [ ] DMA engine для аппаратной загрузки векторов
 - [ ] Interrupt-driven результаты
-- [ ] QEMU интеграция (virtual PCI device)
 
 ## Лицензия
 
