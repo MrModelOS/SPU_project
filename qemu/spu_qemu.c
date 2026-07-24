@@ -1,5 +1,9 @@
 /*
- * spu_qemu.c — QEMU virtual PCI device: Search Processing Unit
+ * spu_qemu.c — QEMU virtual PCI device: Search Processing Unit v0.2
+ *
+ * BAR0: MMIO registers (4KB)
+ * BAR1: Vector memory bank (3MB)
+ * BAR2: DMA buffer for host-guest transfers (4MB)
  */
 
 #include "qemu/osdep.h"
@@ -15,6 +19,7 @@
 #define SPU_REG_STATUS       0x04
 #define SPU_REG_VEC_COUNT    0x08
 #define SPU_REG_DIMENSION    0x0C
+#define SPU_REG_TARGET_ADDR  0x10
 #define SPU_REG_RESULT_IDX   0x18
 #define SPU_REG_RESULT_SCORE 0x1C
 #define SPU_REG_DEVICE_ID    0x20
@@ -34,13 +39,14 @@
 
 #define SPU_PCI_VENDOR_ID  0x1234
 #define SPU_PCI_DEVICE_ID  0x5780
-#define SPU_DEVICE_VERSION 0x0001
+#define SPU_DEVICE_VERSION 0x0002
 #define SPU_MAGIC_VALUE    0x53505520
 
-#define SPU_MAX_VECTORS   1000
-#define SPU_MAX_DIMENSION 768
-#define SPU_BAR0_SIZE     0x1000
-#define SPU_VEC_MEM_SIZE  (SPU_MAX_VECTORS * SPU_MAX_DIMENSION * (int)sizeof(float))
+#define SPU_MAX_VECTORS    1000
+#define SPU_MAX_DIMENSION  768
+#define SPU_BAR0_SIZE      0x1000
+#define SPU_VEC_MEM_SIZE   (SPU_MAX_VECTORS * SPU_MAX_DIMENSION * (int)sizeof(float))
+#define SPU_DMA_SIZE       (4 * 1024 * 1024)
 
 #define TYPE_SPU_PCI_DEVICE "spu-pci"
 OBJECT_DECLARE_SIMPLE_TYPE(SPUPCIState, SPU_PCI_DEVICE)
@@ -49,8 +55,10 @@ struct SPUPCIState {
     PCIDevice parent_obj;
     MemoryRegion mmio;
     MemoryRegion vector_mem;
+    MemoryRegion dma_mem;
     uint32_t regs[16];
     float *vec_bank;
+    uint8_t *dma_buf;
     float target[SPU_MAX_DIMENSION];
 };
 
@@ -126,6 +134,17 @@ static void spu_mmio_write(void *opaque, hwaddr addr, uint64_t val,
             pci_set_irq(&s->parent_obj, 0);
         }
         break;
+    case SPU_REG_TARGET_ADDR: {
+        /* DMA: copy target vector from DMA buffer into device target[] */
+        uint32_t dim = s->regs[SPU_REG_DIMENSION / 4];
+        if (dim > SPU_MAX_DIMENSION) dim = SPU_MAX_DIMENSION;
+        uint32_t offset = (uint32_t)val;
+        if (offset + dim * sizeof(float) <= SPU_DMA_SIZE) {
+            memcpy(s->target, s->dma_buf + offset, dim * sizeof(float));
+        }
+        s->regs[SPU_REG_TARGET_ADDR / 4] = (uint32_t)val;
+        break;
+    }
     default:
         s->regs[addr / 4] = (uint32_t)val;
         break;
@@ -150,44 +169,62 @@ static const MemoryRegionOps spu_vec_mem_ops = {
     },
 };
 
+static const MemoryRegionOps spu_dma_ops = {
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 1,
+        .max_access_size = 4,
+    },
+};
+
 static void spu_realize(PCIDevice *pdev, Error **errp)
 {
     SPUPCIState *s = SPU_PCI_DEVICE(pdev);
 
     pci_set_word(pdev->config + PCI_VENDOR_ID, SPU_PCI_VENDOR_ID);
     pci_set_word(pdev->config + PCI_DEVICE_ID, SPU_PCI_DEVICE_ID);
-    pdev->config[PCI_REVISION_ID] = 0x01;
+    pdev->config[PCI_REVISION_ID] = 0x02;
     pci_set_word(pdev->config + PCI_CLASS_DEVICE, PCI_CLASS_OTHERS);
     pdev->config[PCI_INTERRUPT_PIN] = 1;
 
     s->vec_bank = g_malloc0(SPU_VEC_MEM_SIZE);
-    if (!s->vec_bank) {
+    s->dma_buf  = g_malloc0(SPU_DMA_SIZE);
+    if (!s->vec_bank || !s->dma_buf) {
         error_setg(errp, "spu: allocation failed");
         return;
     }
 
+    /* BAR0: MMIO registers */
     memory_region_init_io(&s->mmio, OBJECT(s), &spu_mmio_ops, s,
                           "spu-mmio", SPU_BAR0_SIZE);
     pci_register_bar(pdev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
 
+    /* BAR1: Vector memory bank */
     memory_region_init_io(&s->vector_mem, OBJECT(s), &spu_vec_mem_ops, s,
                           "spu-vec-mem", SPU_VEC_MEM_SIZE);
     pci_register_bar(pdev, 1, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->vector_mem);
 
+    /* BAR2: DMA buffer (host-guest transfers) */
+    memory_region_init_io(&s->dma_mem, OBJECT(s), &spu_dma_ops, s,
+                          "spu-dma", SPU_DMA_SIZE);
+    pci_register_bar(pdev, 2, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->dma_mem);
+
     s->regs[SPU_REG_STATUS / 4] = SPU_STATUS_READY;
-    printf("[SPU-QEMU] Ready: BAR0=%uKB BAR1=%dMB\n",
-           SPU_BAR0_SIZE / 1024, SPU_VEC_MEM_SIZE / (1024 * 1024));
+    printf("[SPU-QEMU] Ready: BAR0=%uKB BAR1=%dMB BAR2=%dMB\n",
+           SPU_BAR0_SIZE / 1024, SPU_VEC_MEM_SIZE / (1024 * 1024),
+           SPU_DMA_SIZE / (1024 * 1024));
 }
 
 static void spu_unrealize(PCIDevice *pdev)
 {
     SPUPCIState *s = SPU_PCI_DEVICE(pdev);
     g_free(s->vec_bank);
+    g_free(s->dma_buf);
 }
 
 static const VMStateDescription spu_vmstate = {
     .name = TYPE_SPU_PCI_DEVICE,
-    .version_id = 1,
+    .version_id = 2,
     .fields = (VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, SPUPCIState, 16),
         VMSTATE_END_OF_LIST()

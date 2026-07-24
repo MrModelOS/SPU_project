@@ -260,9 +260,9 @@ python3 examples/spu_client.py
 - [x] HTTP REST API сервер
 - [x] Python-клиент
 - [x] QEMU virtual PCI device (`-device spu-pci`)
-- [ ] FPGA синтез (Verilog/VHDL)
-- [ ] DMA engine для аппаратной загрузки векторов
-- [ ] Interrupt-driven результаты
+- [x] DMA engine для аппаратной загрузки векторов
+- [x] Interrupt-driven результаты (IRQ handler в драйвере)
+- [x] FPGA RTL (Verilog: spu_regs, spu_dotprod, spu_dma, spu_vecmem, spu_top)
 
 ## Лицензия
 

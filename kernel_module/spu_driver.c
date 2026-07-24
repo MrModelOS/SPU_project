@@ -1,12 +1,13 @@
 /*
- * SPU (Search Processing Unit) Kernel Driver
+ * SPU (Search Processing Unit) Kernel Driver v0.2
  *
- * Функции:
- *  - PCI probe/remove с маппингом BAR0 через ioremap
- *  - Char device /dev/spu с ioctl интерфейсом
- *  - Software-эмуляция режим (emulation=1) для тестирования без PCI hardware
- *
- * Стайл: Linux Kernel Coding Style, C11 (kernel subset)
+ * Dual-mode: software emulation + real PCI hardware.
+ * Features:
+ *   - PCI probe/remove with BAR0 MMIO + BAR2 DMA mapping
+ *   - Char device /dev/spu with ioctl interface
+ *   - IRQ-driven completion (no polling needed)
+ *   - DMA engine for hardware vector loading
+ *   - Software emulation mode (emulation=1)
  */
 
 #include <linux/module.h>
@@ -21,38 +22,40 @@
 #include <linux/pci.h>
 #include <linux/io.h>
 #include <linux/spinlock.h>
-#include <linux/string.h>
 #include <linux/ioctl.h>
+#include <linux/interrupt.h>
+#include <linux/delay.h>
+#include <linux/jiffies.h>
+#include <asm/fpu/api.h>
 
 #include "../emulator/spu_device.h"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("SPU Project");
-MODULE_DESCRIPTION("SPU PCI Driver with MMIO and emulation support");
-MODULE_VERSION("0.1");
+MODULE_DESCRIPTION("SPU PCI Driver with DMA, IRQ, and emulation support");
+MODULE_VERSION("0.2");
 
 static bool emulation = true;
 module_param(emulation, bool, 0444);
-MODULE_PARM_DESC(emulation,
-		 "Enable software emulation (no PCI hardware required)");
+MODULE_PARM_DESC(emulation, "Enable software emulation (no PCI hardware required)");
 
-#define SPU_DEV_NAME	"spu"
-#define SPU_CLASS_NAME	"spu"
+#define SPU_DEV_NAME   "spu"
+#define SPU_CLASS_NAME "spu"
+#define SPU_DMA_BAR    2
+#define SPU_DMA_SIZE   (4 * 1024 * 1024)
 
-/*
- * Один экземпляр устройства на весь модуль (single-function SPU).
- * Для multi-function топологии превратить в список struct spu_device.
- */
 struct spu_dev {
-	struct pci_dev *pdev;		/* NULL в режиме emulation       */
-	void __iomem *bar0;		/* iomapped BAR0                 */
+	struct pci_dev *pdev;
+	void __iomem *bar0;
+	void __iomem *bar2;
 	struct cdev cdev;
 	struct device *dev;
 	dev_t devt;
 	struct class *class;
 	spinlock_t lock;
-
-	/* Emulation buffers (используются только при emulation=1) */
+	int irq;
+	wait_queue_head_t wait_q;
+	int done_flag;
 	uint32_t *emu_regs;
 	float (*emu_mem)[SPU_MAX_DIMENSION];
 	float *emu_target;
@@ -60,17 +63,31 @@ struct spu_dev {
 
 static struct spu_dev spu;
 
-/*
- * ==========================================================================
- * Emulation core (software SPU running inside kernel)
- * ==========================================================================
- */
-#include <asm/fpu/api.h>
+/* Forward declarations */
+static noinline void spu_emu_run_search(struct spu_dev *s);
 
-/*
- * target("sse") required because the kernel is compiled with -mno-sse.
- * Runtime SSE usage is guarded with kernel_fpu_begin/end.
- */
+/* ---- MMIO accessors ---- */
+
+static inline uint32_t spu_read32(struct spu_dev *s, uint32_t off)
+{
+	if (emulation)
+		return s->emu_regs[SPU_REG_IDX(off)];
+	return readl(s->bar0 + off);
+}
+
+static inline void spu_write32(struct spu_dev *s, uint32_t val, uint32_t off)
+{
+	if (emulation) {
+		s->emu_regs[SPU_REG_IDX(off)] = val;
+		if (off == SPU_REG_CTRL && (val & SPU_CTRL_START))
+			spu_emu_run_search(s);
+	} else {
+		writel(val, s->bar0 + off);
+	}
+}
+
+/* ---- Emulation core (dot-product in kernel FPU) ---- */
+
 __attribute__((target("sse")))
 static noinline void spu_emu_run_search(struct spu_dev *s)
 {
@@ -90,7 +107,6 @@ static noinline void spu_emu_run_search(struct spu_dev *s)
 		dot = 0.0f;
 		for (d = 0; d < dim; d++)
 			dot += s->emu_mem[i][d] * s->emu_target[d];
-
 		if (dot > max_score) {
 			max_score = dot;
 			best_index = i;
@@ -102,49 +118,106 @@ static noinline void spu_emu_run_search(struct spu_dev *s)
 	memcpy(&s->emu_regs[SPU_REG_IDX(SPU_REG_RESULT_SCORE)],
 	       &max_score, sizeof(float));
 	s->emu_regs[SPU_REG_IDX(SPU_REG_STATUS)] = SPU_STATUS_DONE;
-
-	pr_info("spu: emulation search done, best=%d score=%d (x1000)\n",
-		best_index, (int)(max_score * 1000.0f));
 }
 
-/*
- * ==========================================================================
- * MMIO accessors — unified for HW and emulation
- * ==========================================================================
- */
-static inline uint32_t spu_read32(struct spu_dev *s, uint32_t off)
+/* ---- Hardware-mode helpers ---- */
+
+static void spu_hw_start_search(struct spu_dev *s)
 {
+	spu_write32(s, SPU_CTRL_INT_EN | SPU_CTRL_START, SPU_REG_CTRL);
+}
+
+static int spu_hw_load_vector(struct spu_dev *s, uint32_t index,
+			      const float *data, uint32_t dim)
+{
+	size_t offset, bytes;
+
+	if (!s->bar2)
+		return -ENODEV;
+
+	offset = SPU_MAX_DIMENSION * sizeof(float) +
+		 (size_t)index * SPU_MAX_DIMENSION * sizeof(float);
+	bytes  = dim * sizeof(float);
+
+	if (offset + bytes > SPU_DMA_SIZE)
+		return -EINVAL;
+
+	memcpy_toio(s->bar2 + offset, data, bytes);
+	return 0;
+}
+
+static int spu_hw_set_target(struct spu_dev *s, const float *data, uint32_t dim)
+{
+	size_t bytes = dim * sizeof(float);
+
+	if (!s->bar2)
+		return -ENODEV;
+	if (bytes > SPU_DMA_SIZE)
+		return -EINVAL;
+
+	memcpy_toio(s->bar2, data, bytes);
+	return 0;
+}
+
+static void spu_hw_get_result(struct spu_dev *s, struct spu_ioctl_result *r)
+{
+	uint32_t raw;
+
+	r->index  = spu_read32(s, SPU_REG_RESULT_IDX);
+	r->status = spu_read32(s, SPU_REG_STATUS);
+	raw = spu_read32(s, SPU_REG_RESULT_SCORE);
+	memcpy(&r->score, &raw, sizeof(float));
+}
+
+/* ---- IRQ handler ---- */
+
+static irqreturn_t spu_irq_handler(int irq, void *dev_id)
+{
+	struct spu_dev *s = dev_id;
+	uint32_t int_status;
+
 	if (emulation)
-		return s->emu_regs[SPU_REG_IDX(off)];
-	return readl(s->bar0 + off);
+		return IRQ_NONE;
+
+	int_status = spu_read32(s, SPU_REG_INT_STATUS);
+	if (!(int_status & SPU_INT_COMPLETE))
+		return IRQ_NONE;
+
+	spu_write32(s, SPU_INT_COMPLETE, SPU_REG_INT_STATUS);
+	s->done_flag = 1;
+	wake_up_interruptible(&s->wait_q);
+	return IRQ_HANDLED;
 }
 
-static inline void spu_write32(struct spu_dev *s, uint32_t val, uint32_t off)
+static int spu_hw_wait_done(struct spu_dev *s, unsigned int timeout_ms)
 {
-	if (emulation) {
-		s->emu_regs[SPU_REG_IDX(off)] = val;
-		if (off == SPU_REG_CTRL && (val & SPU_CTRL_START))
-			spu_emu_run_search(s);
-	} else {
-		writel(val, s->bar0 + off);
+	int ret;
+
+	if (s->done_flag) {
+		s->done_flag = 0;
+		return 0;
 	}
+
+	ret = wait_event_interruptible_timeout(s->wait_q, s->done_flag,
+					       msecs_to_jiffies(timeout_ms));
+	if (ret > 0) {
+		s->done_flag = 0;
+		return 0;
+	}
+	return -ETIMEDOUT;
 }
 
-/*
- * ==========================================================================
- * Chardev file operations
- * ==========================================================================
- */
+/* ---- Chardev file operations ---- */
+
 static int spu_open(struct inode *inode, struct file *filp)
 {
 	filp->private_data = &spu;
-	pr_info("spu: opened by pid %d\n", current->pid);
+	spu.done_flag = 0;
 	return 0;
 }
 
 static int spu_release(struct inode *inode, struct file *filp)
 {
-	pr_info("spu: closed by pid %d\n", current->pid);
 	return 0;
 }
 
@@ -160,19 +233,16 @@ static long spu_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	bool need_result = false;
 	bool need_status = false;
 
-	/* User copies happen outside the spinlock (may sleep). */
 	switch (cmd) {
 	case SPU_IOCTL_RESET:
 	case SPU_IOCTL_START:
 		break;
-
 	case SPU_IOCTL_SET_PARAM:
 		if (copy_from_user(&param, (void __user *)arg, sizeof(param)))
 			return -EFAULT;
 		if (param.dimension > SPU_MAX_DIMENSION)
 			return -EINVAL;
 		break;
-
 	case SPU_IOCTL_LOAD_VEC:
 	case SPU_IOCTL_SET_TARGET:
 		vec = kmalloc(sizeof(*vec), GFP_KERNEL);
@@ -193,15 +263,12 @@ static long spu_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			return -EINVAL;
 		}
 		break;
-
 	case SPU_IOCTL_GET_RESULT:
 		need_result = true;
 		break;
-
 	case SPU_IOCTL_GET_STATUS:
 		need_status = true;
 		break;
-
 	default:
 		return -EINVAL;
 	}
@@ -212,49 +279,54 @@ static long spu_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	case SPU_IOCTL_RESET:
 		spu_write32(s, SPU_CTRL_RESET, SPU_REG_CTRL);
 		spu_write32(s, 0, SPU_REG_CTRL);
+		s->done_flag = 0;
 		break;
-
 	case SPU_IOCTL_SET_PARAM:
 		spu_write32(s, param.vec_count, SPU_REG_VEC_COUNT);
 		spu_write32(s, param.dimension, SPU_REG_DIMENSION);
 		break;
-
 	case SPU_IOCTL_LOAD_VEC:
 		if (emulation) {
 			memcpy(s->emu_mem[vec->index], vec->data,
 			       vec->dim * sizeof(float));
 		} else {
-			/* TODO: DMA или программная запись в MMIO window */
-			ret = -ENOSYS;
+			spin_unlock_irqrestore(&s->lock, flags);
+			ret = spu_hw_load_vector(s, vec->index,
+						  vec->data, vec->dim);
+			spin_lock_irqsave(&s->lock, flags);
 		}
 		break;
-
 	case SPU_IOCTL_SET_TARGET:
-		if (emulation)
-			memcpy(s->emu_target, vec->data, vec->dim * sizeof(float));
-		else
-			ret = -ENOSYS;
-		break;
-
-	case SPU_IOCTL_START:
-		spu_write32(s, SPU_CTRL_START, SPU_REG_CTRL);
-		break;
-
-	case SPU_IOCTL_GET_RESULT:
-		result.index = spu_read32(s, SPU_REG_RESULT_IDX);
-		result.status = spu_read32(s, SPU_REG_STATUS);
 		if (emulation) {
+			memcpy(s->emu_target, vec->data,
+			       vec->dim * sizeof(float));
+		} else {
+			spin_unlock_irqrestore(&s->lock, flags);
+			ret = spu_hw_set_target(s, vec->data, vec->dim);
+			spin_lock_irqsave(&s->lock, flags);
+		}
+		break;
+	case SPU_IOCTL_START:
+		if (emulation) {
+			spu_write32(s, SPU_CTRL_START, SPU_REG_CTRL);
+		} else {
+			spu_write32(s, SPU_CTRL_INT_EN, SPU_REG_INT_MASK);
+			spu_hw_start_search(s);
+		}
+		break;
+	case SPU_IOCTL_GET_RESULT:
+		if (emulation) {
+			result.index = spu_read32(s, SPU_REG_RESULT_IDX);
+			result.status = spu_read32(s, SPU_REG_STATUS);
 			memcpy(&result.score,
 			       &s->emu_regs[SPU_REG_IDX(SPU_REG_RESULT_SCORE)],
 			       sizeof(float));
 		} else {
-			uint32_t raw;
-
-			raw = spu_read32(s, SPU_REG_RESULT_SCORE);
-			memcpy(&result.score, &raw, sizeof(float));
+			spin_unlock_irqrestore(&s->lock, flags);
+			spu_hw_get_result(s, &result);
+			spin_lock_irqsave(&s->lock, flags);
 		}
 		break;
-
 	case SPU_IOCTL_GET_STATUS:
 		status = spu_read32(s, SPU_REG_STATUS);
 		break;
@@ -265,11 +337,9 @@ static long spu_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	if (ret)
 		return ret;
-
 	if (need_result &&
 	    copy_to_user((void __user *)arg, &result, sizeof(result)))
 		return -EFAULT;
-
 	if (need_status && put_user(status, (uint32_t __user *)arg))
 		return -EFAULT;
 
@@ -277,18 +347,15 @@ static long spu_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 }
 
 static const struct file_operations spu_fops = {
-	.owner		= THIS_MODULE,
-	.open		= spu_open,
-	.release	= spu_release,
-	.unlocked_ioctl	= spu_ioctl,
-	.compat_ioctl	= spu_ioctl,
+	.owner          = THIS_MODULE,
+	.open           = spu_open,
+	.release        = spu_release,
+	.unlocked_ioctl = spu_ioctl,
+	.compat_ioctl   = spu_ioctl,
 };
 
-/*
- * ==========================================================================
- * Chardev / sysfs boilerplate
- * ==========================================================================
- */
+/* ---- Chardev boilerplate ---- */
+
 static char *spu_devnode(const struct device *dev, umode_t *mode)
 {
 	if (mode)
@@ -317,7 +384,6 @@ static int spu_create_chardev(void)
 	cls = class_create(SPU_CLASS_NAME);
 	if (IS_ERR(cls)) {
 		ret = PTR_ERR(cls);
-		pr_err("spu: class_create failed\n");
 		goto err_cdev;
 	}
 	cls->devnode = spu_devnode;
@@ -326,10 +392,8 @@ static int spu_create_chardev(void)
 	spu.dev = device_create(spu.class, NULL, spu.devt, NULL, SPU_DEV_NAME);
 	if (IS_ERR(spu.dev)) {
 		ret = PTR_ERR(spu.dev);
-		pr_err("spu: device_create failed\n");
 		goto err_class;
 	}
-
 	return 0;
 
 err_class:
@@ -351,16 +415,12 @@ static void spu_destroy_chardev(void)
 	unregister_chrdev_region(spu.devt, 1);
 }
 
-/*
- * ==========================================================================
- * PCI probe / remove
- * ==========================================================================
- */
+/* ---- PCI probe / remove ---- */
+
 static int spu_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	int ret;
 	resource_size_t bar_start, bar_len;
-	uint32_t dev_id;
 
 	pr_info("spu: probing PCI %04x:%04x\n", pdev->vendor, id->device);
 
@@ -376,6 +436,7 @@ static int spu_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_disable;
 	}
 
+	/* BAR0: MMIO registers */
 	bar_start = pci_resource_start(pdev, 0);
 	bar_len = pci_resource_len(pdev, 0);
 	if (bar_len < SPU_BAR0_SIZE) {
@@ -386,25 +447,47 @@ static int spu_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	spu.bar0 = pci_iomap(pdev, 0, SPU_BAR0_SIZE);
 	if (!spu.bar0) {
-		dev_err(&pdev->dev, "pci_iomap failed\n");
+		dev_err(&pdev->dev, "pci_iomap BAR0 failed\n");
 		ret = -ENOMEM;
 		goto err_regions;
 	}
 
+	/* BAR2: DMA buffer for vector data */
+	bar_start = pci_resource_start(pdev, SPU_DMA_BAR);
+	bar_len = pci_resource_len(pdev, SPU_DMA_BAR);
+	if (bar_len >= SPU_DMA_SIZE) {
+		spu.bar2 = pci_iomap(pdev, SPU_DMA_BAR, SPU_DMA_SIZE);
+		if (spu.bar2)
+			pr_info("spu: BAR2 DMA mapped %pa (%llu bytes)\n",
+				&bar_start, (unsigned long long)bar_len);
+	}
+
+	if (!spu.bar2)
+		pr_warn("spu: BAR2 not available, DMA disabled\n");
+
 	spu.pdev = pdev;
 	pci_set_drvdata(pdev, &spu);
 
-	pr_info("spu: BAR0 mapped at %pa, size %u\n", &bar_start, SPU_BAR0_SIZE);
+	ret = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI | PCI_IRQ_INTX);
+	if (ret < 0) {
+		pr_warn("spu: no IRQ, polling mode\n");
+	} else {
+		spu.irq = pci_irq_vector(pdev, 0);
+		ret = request_irq(spu.irq, spu_irq_handler,
+				  IRQF_SHARED, SPU_DEV_NAME, &spu);
+		if (ret) {
+			pr_warn("spu: request_irq failed (%d)\n", ret);
+			spu.irq = -1;
+		} else {
+			pr_info("spu: IRQ %d registered\n", spu.irq);
+		}
+	}
 
-	/* Sanity check: считать DEVICE_ID из MMIO */
-	dev_id = spu_read32(&spu, SPU_REG_DEVICE_ID);
-	pr_info("spu: MMIO DEVICE_ID = 0x%04x\n", dev_id);
-
-	/* Сброс устройства */
+	pr_info("spu: DEVICE_ID = 0x%04x\n",
+		spu_read32(&spu, SPU_REG_DEVICE_ID));
 	spu_write32(&spu, SPU_CTRL_RESET, SPU_REG_CTRL);
 	spu_write32(&spu, 0, SPU_REG_CTRL);
 	spu_write32(&spu, SPU_STATUS_READY, SPU_REG_STATUS);
-
 	return 0;
 
 err_regions:
@@ -416,6 +499,13 @@ err_disable:
 
 static void spu_pci_remove(struct pci_dev *pdev)
 {
+	if (spu.irq >= 0)
+		free_irq(spu.irq, &spu);
+	pci_free_irq_vectors(pdev);
+	if (spu.bar2) {
+		pci_iounmap(pdev, spu.bar2);
+		spu.bar2 = NULL;
+	}
 	if (spu.bar0) {
 		pci_iounmap(pdev, spu.bar0);
 		spu.bar0 = NULL;
@@ -433,35 +523,32 @@ static const struct pci_device_id spu_pci_ids[] = {
 MODULE_DEVICE_TABLE(pci, spu_pci_ids);
 
 static struct pci_driver spu_pci_driver = {
-	.name		= SPU_DEV_NAME,
-	.id_table	= spu_pci_ids,
-	.probe		= spu_pci_probe,
-	.remove		= spu_pci_remove,
+	.name       = SPU_DEV_NAME,
+	.id_table   = spu_pci_ids,
+	.probe      = spu_pci_probe,
+	.remove     = spu_pci_remove,
 };
 
-/*
- * ==========================================================================
- * Module init / exit
- * ==========================================================================
- */
+/* ---- Module init / exit ---- */
+
 static int __init spu_init(void)
 {
 	int ret;
 
 	pr_info("spu: driver loading (emulation=%d)\n", emulation);
 	spin_lock_init(&spu.lock);
+	init_waitqueue_head(&spu.wait_q);
+	spu.irq = -1;
 
 	ret = spu_create_chardev();
 	if (ret)
 		return ret;
 
 	if (emulation) {
-		pr_info("spu: allocating emulation state\n");
 		spu.emu_regs = kzalloc(SPU_BAR0_SIZE, GFP_KERNEL);
 		spu.emu_mem = vzalloc(SPU_MAX_VECTORS * SPU_MAX_DIM_BYTES);
 		spu.emu_target = kzalloc(SPU_MAX_DIM_BYTES, GFP_KERNEL);
 		if (!spu.emu_regs || !spu.emu_mem || !spu.emu_target) {
-			pr_err("spu: emulation alloc failed\n");
 			kfree(spu.emu_regs);
 			vfree(spu.emu_mem);
 			kfree(spu.emu_target);
@@ -481,7 +568,6 @@ static int __init spu_init(void)
 			return ret;
 		}
 	}
-
 	return 0;
 }
 
@@ -494,7 +580,6 @@ static void __exit spu_exit(void)
 	} else {
 		pci_unregister_driver(&spu_pci_driver);
 	}
-
 	spu_destroy_chardev();
 	pr_info("spu: driver unloaded\n");
 }
