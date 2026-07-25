@@ -67,6 +67,9 @@
 #define SPU_REG_SEU_TREE_RESULT	0x44U	/* RO: Адрес результата дерева              */
 #define SPU_REG_SEU_PROB_BASE	0x48U	/* RW: База конфигурации вероятностей       */
 #define SPU_REG_SEU_IRQ_STATUS	0x4CU	/* RW1C: Статус прерываний SEU              */
+#define SPU_REG_SEU_PROB_READ_IDX  0x50U	/* RW: Индекс для чтения вероятности (0..127) */
+#define SPU_REG_SEU_PROB_READBACK  0x54U	/* RO: Значение вероятности по индексу       */
+#define SPU_REG_SEU_TREE_ENTRIES_TOTAL 0x58U	/* RO: Всего записей дерева               */
 
 /* SEU control flags — SPU_REG_SEU_CTRL */
 #define SPU_SEU_START		(1U << 0)	/* Запуск генерации дерева     */

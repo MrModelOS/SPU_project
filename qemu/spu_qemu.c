@@ -37,6 +37,9 @@
 #define SPU_REG_SEU_TREE_RESULT 0x44
 #define SPU_REG_SEU_PROB_BASE  0x48
 #define SPU_REG_SEU_IRQ_STATUS 0x4C
+#define SPU_REG_SEU_PROB_READ_IDX  0x50
+#define SPU_REG_SEU_PROB_READBACK  0x54
+#define SPU_REG_SEU_TREE_ENTRIES_TOTAL 0x58
 
 /* ---- SPU control flags ---- */
 #define SPU_CTRL_START   (1U << 0)
@@ -187,6 +190,21 @@ static uint64_t spu_mmio_read(void *opaque, hwaddr addr, unsigned int size)
     if (addr + size > SPU_BAR0_SIZE) return 0;
     if (addr == SPU_REG_DEVICE_ID) return SPU_DEVICE_VERSION;
     if (addr == SPU_REG_MAGIC) return SPU_MAGIC_VALUE;
+
+    /* SEU probability readback */
+    if (addr == SPU_REG_SEU_PROB_READBACK) {
+        uint32_t idx = s->regs[SPU_REG_SEU_PROB_READ_IDX / 4];
+        if (idx < SPU_SEU_TREE_ENTRIES) {
+            uint32_t bits;
+            memcpy(&bits, &s->seu_tree[idx], sizeof(float));
+            return bits;
+        }
+        return 0;
+    }
+    if (addr == SPU_REG_SEU_TREE_ENTRIES_TOTAL) {
+        return s->regs[SPU_REG_SEU_TREE_RESULT / 4];
+    }
+
     return s->regs[addr / 4];
 }
 

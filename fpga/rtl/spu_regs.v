@@ -45,7 +45,12 @@ module spu_regs (
     output reg  [31:0] seu_tree_addr,
     input  wire [31:0] seu_tree_result,
     output reg  [31:0] seu_prob_base,
-    input  wire [31:0] seu_irq_status
+    input  wire [31:0] seu_irq_status,
+
+    // SEU probability profiling
+    output reg  [31:0] seu_prob_read_idx,
+    input  wire [31:0] seu_prob_readback,
+    input  wire [31:0] seu_tree_entries_total
 );
 
     localparam SPU_REG_CTRL         = 12'h000;
@@ -67,7 +72,10 @@ module spu_regs (
     localparam SPU_REG_SEU_TREE_ADDR  = 12'h040;
     localparam SPU_REG_SEU_TREE_RES   = 12'h044;
     localparam SPU_REG_SEU_PROB_BASE  = 12'h048;
-    localparam SPU_REG_SEU_IRQ_STATUS = 12'h04C;
+    localparam SPU_REG_SEU_IRQ_STATUS       = 12'h04C;
+    localparam SPU_REG_SEU_PROB_READ_IDX    = 12'h050;
+    localparam SPU_REG_SEU_PROB_READBACK    = 12'h054;
+    localparam SPU_REG_SEU_TREE_ENTRIES_TOTAL = 12'h058;
 
     localparam SPU_DEVICE_VERSION   = 32'h0000_0003;
     localparam SPU_MAGIC            = 32'h5350_5520;
@@ -101,6 +109,7 @@ module spu_regs (
             seu_offset    <= 32'd0;
             seu_tree_addr <= 32'd0;
             seu_prob_base <= 32'd0;
+            seu_prob_read_idx <= 32'd0;
         end else begin
             if (s_axi_bready)
                 aw_done <= 1'b0;
@@ -123,6 +132,7 @@ module spu_regs (
                             SPU_REG_SEU_TREE_ADDR: seu_tree_addr <= s_axi_wdata;
                             SPU_REG_SEU_PROB_BASE: seu_prob_base <= s_axi_wdata;
                             SPU_REG_SEU_IRQ_STATUS: ; // RW1C handled externally
+                            SPU_REG_SEU_PROB_READ_IDX: seu_prob_read_idx <= s_axi_wdata;
                             default: ;
                         endcase
                     end else if (s_axi_awvalid) begin
@@ -145,6 +155,7 @@ module spu_regs (
                             SPU_REG_SEU_OFFSET:    seu_offset    <= s_axi_wdata;
                             SPU_REG_SEU_TREE_ADDR: seu_tree_addr <= s_axi_wdata;
                             SPU_REG_SEU_PROB_BASE: seu_prob_base <= s_axi_wdata;
+                            SPU_REG_SEU_PROB_READ_IDX: seu_prob_read_idx <= s_axi_wdata;
                             default: ;
                         endcase
                     end
@@ -163,6 +174,7 @@ module spu_regs (
                             SPU_REG_SEU_OFFSET:    seu_offset    <= s_axi_wdata;
                             SPU_REG_SEU_TREE_ADDR: seu_tree_addr <= s_axi_wdata;
                             SPU_REG_SEU_PROB_BASE: seu_prob_base <= s_axi_wdata;
+                            SPU_REG_SEU_PROB_READ_IDX: seu_prob_read_idx <= s_axi_wdata;
                             default: ;
                         endcase
                     end
@@ -208,6 +220,9 @@ module spu_regs (
                             SPU_REG_SEU_TREE_RES:   ar_rdata <= seu_tree_result;
                             SPU_REG_SEU_PROB_BASE:  ar_rdata <= seu_prob_base;
                             SPU_REG_SEU_IRQ_STATUS: ar_rdata <= seu_irq_status;
+                            SPU_REG_SEU_PROB_READ_IDX:  ar_rdata <= seu_prob_read_idx;
+                            SPU_REG_SEU_PROB_READBACK:  ar_rdata <= seu_prob_readback;
+                            SPU_REG_SEU_TREE_ENTRIES_TOTAL: ar_rdata <= seu_tree_entries_total;
                             12'h0FC:                 ar_rdata <= SPU_MAGIC;
                             default:                 ar_rdata <= 32'd0;
                         endcase

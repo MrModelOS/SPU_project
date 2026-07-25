@@ -12,7 +12,8 @@ RTL_SRC = $(RTL_DIR)/spu_regs.v \
           $(RTL_DIR)/spu_dma.v \
           $(RTL_DIR)/spu_vecmem.v \
           $(RTL_DIR)/seu_tree.v \
-          $(RTL_DIR)/spu_top.v
+          $(RTL_DIR)/spu_top.v \
+          $(RTL_DIR)/spu_pynq_top.v
 
 TB_SRC = $(SIM_DIR)/tb_spu.v
 XDC    = $(CONST_DIR)/spu_artix7.xdc

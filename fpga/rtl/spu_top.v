@@ -65,6 +65,11 @@ module spu_top #(
     wire [31:0] seu_prob_base;
     wire [31:0] seu_irq_status;
 
+    // SEU probability profiling
+    wire [31:0] seu_prob_read_idx;
+    wire [31:0] seu_prob_readback;
+    wire [31:0] seu_tree_entries_total;
+
     // ---- Dot-product engine wires ----
     wire        dp_start;
     wire        dp_busy;
@@ -242,7 +247,11 @@ module spu_top #(
         .seu_tree_addr (seu_tree_addr),
         .seu_tree_result(seu_tree_result),
         .seu_prob_base (seu_prob_base),
-        .seu_irq_status(seu_irq_status)
+        .seu_irq_status(seu_irq_status),
+        // SEU probability profiling
+        .seu_prob_read_idx  (seu_prob_read_idx),
+        .seu_prob_readback  (seu_prob_readback),
+        .seu_tree_entries_total(seu_tree_entries_total)
     );
 
     // ---- DMA Controller ----
@@ -328,7 +337,11 @@ module spu_top #(
         .vmem_d_rdata (seu_vmem_d_rdata),
         .tree_status  (seu_tree_status),
         .tree_count   (seu_tree_count),
-        .irq_seu      (seu_irq_line)
+        .irq_seu      (seu_irq_line),
+        // SEU probability profiling
+        .prob_read_idx  (seu_prob_read_idx),
+        .prob_readback  (seu_prob_readback),
+        .entries_total  (seu_tree_entries_total)
     );
 
 endmodule

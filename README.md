@@ -84,6 +84,11 @@ SPU_project/
 │  ├── src/libspu.c                 # ioctl-обёртка
 │  ├── libspu.so                    # Разделяемая библиотека
 │  ├── examples/spu_demo.c         # Валидация SDK
+│  ├── python/                      # Python bindings (ctypes)
+│  │  ├── pyproject.toml
+│  │  ├── spu/__init__.py
+│  │  ├── spu/bindings.py
+│  │  └── examples/spu_demo.py
 │  └── Makefile
 │
 ├ tools/                            # CLI-утилиты
@@ -105,13 +110,14 @@ SPU_project/
 ├ fpga/                             # FPGA реализация (Artix-7)
 │  ├── rtl/
 │  │  ├── spu_top.v               # Top-level модуль
-│  │  ├── spu_regs.v              # MMIO регистры (0x00–0x4C)
+│  │  ├── spu_pynq_top.v          # PYNQ/Zynq wrapper
+│  │  ├── spu_regs.v              # MMIO регистры (0x00–0x58)
 │  │  ├── spu_dotprod.v           # Dot-product engine
 │  │  ├── spu_dma.v               # DMA controller
 │  │  ├── spu_vecmem.v            # 4-портовая shared BRAM
 │  │  └── seu_tree.v              # SEU предиктивное дерево
 │  ├── sim/
-│  │  └── tb_spu.v                # Testbench (T1–T16)
+│  │  └── tb_spu.v                # Testbench (T1–T20)
 │  ├── constraints/
 │  │  └── spu_artix7.xdc          # Pin constraints (Artix-7)
 │  ├── scripts/
@@ -151,10 +157,13 @@ SPU_project/
 | `0x44` | SEU_TREE_RESULT | Tree result base address |
 | `0x48` | SEU_PROB_BASE | Probability configuration base |
 | `0x4C` | SEU_IRQ_STATUS | SEU interrupt status (RW1C) |
+| `0x50` | SEU_PROB_READ_IDX | Index for probability readback (0..127) |
+| `0x54` | SEU_PROB_READBACK | Probability value at index (RO) |
+| `0x58` | SEU_TREE_ENTRIES_TOTAL | Total entries computed (RO) |
 
-**Simulation (16 test cases):**
+**Simulation (20 test cases):**
 ```bash
-cd fpga && make sim     # iverilog → all tests pass
+cd fpga && make sim     # iverilog → all tests pass (T1–T20)
 ```
 
 **Synthesis (Vivado):**
@@ -272,12 +281,43 @@ spu_close(spu);
 
 ---
 
+### 8. Python SDK (`sdk/python/`)
+
+Thin ctypes wrapper around libspu.so:
+
+```bash
+cd sdk/python && pip install -e .
+```
+
+```python
+from spu import SPU
+
+with SPU() as spu:
+    # Vector search
+    spu.configure(vec_count=1000, dimension=128)
+    for i, vec in enumerate(vectors):
+        spu.load_vector(i, vec)
+    spu.set_target(query)
+    idx, score = spu.search(timeout_ms=5000)
+    print(f"Best match: vector #{idx}, score={score:.4f}")
+
+    # SEU predictive tree
+    entries = spu.predict_tree(depth=6, offset=0xF0F0, timeout_ms=5000)
+    print(f"Generated {len(entries)} probability entries")
+
+# Run demo
+python3 sdk/python/examples/spu_demo.py
+```
+
+---
+
 ## Требования
 
 - Linux (для kernel module и `/dev/spu`)
 - GCC с поддержкой C11
 - Icarus Verilog (для симуляции FPGA)
 - Vivado (для синтеза на Artix-7)
+- Python 3.8+ (для Python SDK, необязательно)
 - Никаких внешних библиотек (кроме libc)
 
 ## Roadmap
@@ -298,9 +338,9 @@ spu_close(spu);
 - [x] SEU: combined IRQ (SPU_DONE | SEU_DONE, W1C clear)
 - [x] SEU testbench: 16 тест-кейсов (T1–T16)
 - [x] Artix-7 FPGA deployment (XDC constraints, Vivado scripts)
-- [ ] PYNQ / Zynq PS integration (AXI-HPM ↔ AXI-Slave bridge)
-- [ ] Python SDK bindings
-- [ ] SEU: runtime probability profiling via DMA readback
+- [x] PYNQ / Zynq PS integration (AXI-Lite bridge, LED status, spu_pynq_top.v)
+- [x] Python SDK bindings (ctypes/libspu wrapper, spu.Python package)
+- [x] SEU: runtime probability profiling (PROB_READ_IDX / PROB_READBACK / TREE_ENTRIES_TOTAL)
 
 ## Лицензия
 

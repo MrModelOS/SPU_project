@@ -33,7 +33,12 @@ module seu_tree (
     // Status
     output reg  [31:0] tree_status,  // result status word
     output reg  [31:0] tree_count,   // total entries computed
-    output reg  [31:0] irq_seu      // SEU interrupt line
+    output reg  [31:0] irq_seu,      // SEU interrupt line
+
+    // Probability readback (for runtime profiling)
+    input  wire [31:0] prob_read_idx,  // index to read (0..127)
+    output reg  [31:0] prob_readback,  // probability value at idx
+    output reg  [31:0] entries_total   // total entries computed
 );
 
     // ---- FSM States ----
@@ -94,6 +99,8 @@ module seu_tree (
             vmem_c_wdata <= 32'd0;
             vmem_c_wen   <= 1'b0;
             vmem_d_addr  <= 18'd0;
+            prob_readback <= 32'd0;
+            entries_total <= 32'd0;
         end else begin
             done    <= 1'b0;
             irq_seu <= 32'd0;
@@ -185,11 +192,18 @@ module seu_tree (
                     done       <= 1'b1;
                     tree_status <= 32'd2; // DONE
                     tree_count  <= {25'd0, total_entries};
+                    entries_total <= {25'd0, total_entries};
                     irq_seu    <= 32'h0000_0004; // SEU interrupt bit
                     state      <= ST_IDLE;
                 end
             endcase
             end // else (not seu_reset)
+
+            // Probability readback — always available
+            if (prob_read_idx[31:7] == 25'd0)
+                prob_readback <= tree_buf[prob_read_idx[6:0]];
+            else
+                prob_readback <= 32'd0;
         end
     end
 
