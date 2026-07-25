@@ -7,6 +7,10 @@
 *.symvers
 .*.cmd
 
+# Simulation
+*.vcd
+tb_spu
+
 # Binaries
 emulator/spu_emulator
 sdk/libspu.so

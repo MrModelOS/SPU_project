@@ -33,7 +33,7 @@
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("SPU Project");
 MODULE_DESCRIPTION("SPU PCI Driver with DMA, IRQ, and emulation support");
-MODULE_VERSION("0.2");
+MODULE_VERSION("0.3");
 
 static bool emulation = true;
 module_param(emulation, bool, 0444);
@@ -59,12 +59,16 @@ struct spu_dev {
 	uint32_t *emu_regs;
 	float (*emu_mem)[SPU_MAX_DIMENSION];
 	float *emu_target;
+	/* SEU emulation state */
+	int seu_done_flag;
+	float seu_tree[SPU_SEU_VARIANTS * SPU_SEU_MAX_DEPTH];
 };
 
 static struct spu_dev spu;
 
 /* Forward declarations */
 static noinline void spu_emu_run_search(struct spu_dev *s);
+static noinline void spu_emu_run_seu_tree(struct spu_dev *s);
 
 /* ---- MMIO accessors ---- */
 
@@ -81,6 +85,8 @@ static inline void spu_write32(struct spu_dev *s, uint32_t val, uint32_t off)
 		s->emu_regs[SPU_REG_IDX(off)] = val;
 		if (off == SPU_REG_CTRL && (val & SPU_CTRL_START))
 			spu_emu_run_search(s);
+		if (off == SPU_REG_SEU_CTRL && (val & SPU_SEU_START))
+			spu_emu_run_seu_tree(s);
 	} else {
 		writel(val, s->bar0 + off);
 	}
@@ -118,6 +124,50 @@ static noinline void spu_emu_run_search(struct spu_dev *s)
 	memcpy(&s->emu_regs[SPU_REG_IDX(SPU_REG_RESULT_SCORE)],
 	       &max_score, sizeof(float));
 	s->emu_regs[SPU_REG_IDX(SPU_REG_STATUS)] = SPU_STATUS_DONE;
+}
+
+/* ---- SEU tree emulation (kernel FPU) ---- */
+
+__attribute__((target("sse")))
+static noinline void spu_emu_run_seu_tree(struct spu_dev *s)
+{
+	uint32_t depth, offset, seed, total, i, level;
+	uint32_t *regs = s->emu_regs;
+
+	regs[SPU_REG_IDX(SPU_REG_SEU_STATUS)] = SPU_SEU_STATUS_BUSY;
+
+	depth = regs[SPU_REG_IDX(SPU_REG_SEU_DEPTH)];
+	offset = regs[SPU_REG_IDX(SPU_REG_SEU_OFFSET)];
+	if (depth < SPU_SEU_MIN_DEPTH) depth = SPU_SEU_MIN_DEPTH;
+	if (depth > SPU_SEU_MAX_DEPTH) depth = SPU_SEU_MAX_DEPTH;
+
+	total = SPU_SEU_VARIANTS * depth;
+	seed = 0x00000001;
+
+	kernel_fpu_begin();
+	for (i = 0; i < total; i++) {
+		level = i % depth;
+		uint32_t bits = seed ^ (offset << (level & 3)) + (level << 1);
+		memcpy(&s->seu_tree[i], &bits, sizeof(float));
+
+		/* LFSR shift */
+		uint32_t feedback = (seed >> 31) ^ (seed >> 5);
+		seed = (seed << 1) | (feedback & 1);
+	}
+	kernel_fpu_end();
+
+	regs[SPU_REG_IDX(SPU_REG_SEU_TREE_RESULT)] = total;
+	regs[SPU_REG_IDX(SPU_REG_SEU_STATUS)] = SPU_SEU_STATUS_DONE;
+
+	if (regs[SPU_REG_IDX(SPU_REG_SEU_CTRL)] & SPU_SEU_IRQ_EN) {
+		regs[SPU_REG_IDX(SPU_REG_SEU_IRQ_STATUS)] |= SPU_INT_SEU_DONE;
+		regs[SPU_REG_IDX(SPU_REG_INT_STATUS)] |= SPU_INT_SEU_DONE;
+	}
+
+	s->seu_done_flag = 1;
+	wake_up_interruptible(&s->wait_q);
+
+	pr_info("spu: SEU tree done, depth=%u entries=%u\n", depth, total);
 }
 
 /* ---- Hardware-mode helpers ---- */
@@ -180,11 +230,17 @@ static irqreturn_t spu_irq_handler(int irq, void *dev_id)
 		return IRQ_NONE;
 
 	int_status = spu_read32(s, SPU_REG_INT_STATUS);
-	if (!(int_status & SPU_INT_COMPLETE))
+	if (!(int_status & (SPU_INT_COMPLETE | SPU_INT_SEU_DONE)))
 		return IRQ_NONE;
 
-	spu_write32(s, SPU_INT_COMPLETE, SPU_REG_INT_STATUS);
-	s->done_flag = 1;
+	if (int_status & SPU_INT_COMPLETE) {
+		spu_write32(s, SPU_INT_COMPLETE, SPU_REG_INT_STATUS);
+		s->done_flag = 1;
+	}
+	if (int_status & SPU_INT_SEU_DONE) {
+		spu_write32(s, SPU_INT_SEU_DONE, SPU_REG_INT_STATUS);
+		s->seu_done_flag = 1;
+	}
 	wake_up_interruptible(&s->wait_q);
 	return IRQ_HANDLED;
 }
@@ -227,11 +283,14 @@ static long spu_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	struct spu_ioctl_param param;
 	struct spu_ioctl_vector *vec = NULL;
 	struct spu_ioctl_result result;
+	struct spu_seu_config seu_cfg;
+	struct spu_seu_tree_result seu_tree_result;
 	unsigned long flags;
 	int ret = 0;
 	uint32_t status = 0;
 	bool need_result = false;
 	bool need_status = false;
+	bool need_seu_tree = false;
 
 	switch (cmd) {
 	case SPU_IOCTL_RESET:
@@ -268,6 +327,17 @@ static long spu_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		break;
 	case SPU_IOCTL_GET_STATUS:
 		need_status = true;
+		break;
+	case SPU_IOCTL_SEU_CONFIG:
+		if (copy_from_user(&seu_cfg, (void __user *)arg, sizeof(seu_cfg)))
+			return -EFAULT;
+		if (seu_cfg.depth < SPU_SEU_MIN_DEPTH || seu_cfg.depth > SPU_SEU_MAX_DEPTH)
+			return -EINVAL;
+		break;
+	case SPU_IOCTL_SEU_START:
+		break;
+	case SPU_IOCTL_SEU_GET_TREE:
+		need_seu_tree = true;
 		break;
 	default:
 		return -EINVAL;
@@ -330,6 +400,40 @@ static long spu_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	case SPU_IOCTL_GET_STATUS:
 		status = spu_read32(s, SPU_REG_STATUS);
 		break;
+	case SPU_IOCTL_SEU_CONFIG:
+		spu_write32(s, seu_cfg.depth, SPU_REG_SEU_DEPTH);
+		spu_write32(s, seu_cfg.offset, SPU_REG_SEU_OFFSET);
+		spu_write32(s, seu_cfg.tree_addr, SPU_REG_SEU_TREE_ADDR);
+		spu_write32(s, seu_cfg.prob_base, SPU_REG_SEU_PROB_BASE);
+		break;
+	case SPU_IOCTL_SEU_START:
+		if (emulation) {
+			spu_write32(s, SPU_SEU_START, SPU_REG_SEU_CTRL);
+		} else {
+			spu_write32(s, SPU_SEU_IRQ_EN, SPU_REG_SEU_CTRL);
+			spu_write32(s, SPU_SEU_IRQ_EN | SPU_SEU_START,
+				    SPU_REG_SEU_CTRL);
+		}
+		break;
+	case SPU_IOCTL_SEU_GET_TREE:
+		if (emulation) {
+			seu_tree_result.status =
+				spu_read32(s, SPU_REG_SEU_STATUS);
+			memcpy(seu_tree_result.entries, s->seu_tree,
+			       sizeof(seu_tree_result.entries));
+		} else {
+			spin_unlock_irqrestore(&s->lock, flags);
+			seu_tree_result.status =
+				spu_read32(s, SPU_REG_SEU_STATUS);
+			for (int i = 0; i < SPU_SEU_TREE_ENTRIES; i++) {
+				uint32_t raw = readl(s->bar0 +
+					SPU_REG_SEU_TREE_RESULT);
+				memcpy(&seu_tree_result.entries[i], &raw,
+				       sizeof(float));
+			}
+			spin_lock_irqsave(&s->lock, flags);
+		}
+		break;
 	}
 
 	spin_unlock_irqrestore(&s->lock, flags);
@@ -341,6 +445,10 @@ static long spu_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	    copy_to_user((void __user *)arg, &result, sizeof(result)))
 		return -EFAULT;
 	if (need_status && put_user(status, (uint32_t __user *)arg))
+		return -EFAULT;
+	if (need_seu_tree &&
+	    copy_to_user((void __user *)arg, &seu_tree_result,
+			 sizeof(seu_tree_result)))
 		return -EFAULT;
 
 	return 0;
@@ -559,7 +667,9 @@ static int __init spu_init(void)
 			return -ENOMEM;
 		}
 		spu.emu_regs[SPU_REG_IDX(SPU_REG_STATUS)] = SPU_STATUS_READY;
-		pr_info("spu: emulation ready, /dev/%s\n", SPU_DEV_NAME);
+		spu.emu_regs[SPU_REG_IDX(SPU_REG_SEU_STATUS)] = SPU_SEU_STATUS_READY;
+		spu.seu_done_flag = 0;
+		pr_info("spu: emulation ready (SEU v0.3), /dev/%s\n", SPU_DEV_NAME);
 	} else {
 		ret = pci_register_driver(&spu_pci_driver);
 		if (ret) {

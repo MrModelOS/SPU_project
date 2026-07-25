@@ -2,7 +2,8 @@
 `default_nettype none
 
 // SPU Top-Level Module
-// Connects: AXI-Lite registers, DMA controller, vector memory, dot-product engine.
+// Connects: AXI-Lite registers, DMA controller, vector memory, dot-product engine,
+//           and SEU (Speculative Execution Unit) tree predictor.
 // Synthesizable for Xilinx/Intel FPGA with PCIe hard block.
 module spu_top #(
     parameter C_AXI_DATA_WIDTH = 32,
@@ -44,7 +45,7 @@ module spu_top #(
     output wire        m_axi_rready
 );
 
-    // ---- Internal wires ----
+    // ---- Internal wires — SPU core ----
     wire [31:0] ctrl;
     wire [31:0] status;
     wire [31:0] vec_count;
@@ -55,12 +56,23 @@ module spu_top #(
     wire [31:0] int_mask;
     wire [31:0] int_status;
 
+    // ---- Internal wires — SEU registers ----
+    wire [31:0] seu_ctrl;
+    wire [31:0] seu_status;
+    wire [31:0] seu_depth;
+    wire [31:0] seu_offset;
+    wire [31:0] seu_tree_addr;
+    wire [31:0] seu_prob_base;
+    wire [31:0] seu_irq_status;
+
+    // ---- Dot-product engine wires ----
     wire        dp_start;
     wire        dp_busy;
     wire        dp_done;
     wire [31:0] dp_result_idx;
     wire [31:0] dp_result_score;
 
+    // ---- DMA controller wires ----
     wire        dma_start;
     wire        dma_busy;
     wire        dma_done;
@@ -69,6 +81,20 @@ module spu_top #(
     wire [31:0] dma_dst;
     wire [31:0] dma_len;
 
+    // ---- SEU tree wires ----
+    wire        seu_start;
+    wire        seu_busy;
+    wire        seu_done;
+    wire [17:0] seu_vmem_c_addr;
+    wire [31:0] seu_vmem_c_wdata;
+    wire        seu_vmem_c_wen;
+    wire [17:0] seu_vmem_d_addr;
+    wire [31:0] seu_vmem_d_rdata;
+    wire [31:0] seu_tree_status;
+    wire [31:0] seu_tree_count;
+    wire [31:0] seu_irq_line;
+
+    // ---- Vector memory wires — 4-port ----
     wire [17:0] vmem_a_addr;
     wire [31:0] vmem_a_wdata;
     wire        vmem_a_wen;
@@ -78,7 +104,7 @@ module spu_top #(
     wire [11:0] dp_target_raddr;
     wire [31:0] dp_target_rdata;
 
-    // ---- Control logic ----
+    // ---- SPU control logic ----
     reg [1:0] status_reg;
     reg       start_prev;
 
@@ -111,19 +137,72 @@ module spu_top #(
     // Dot-product trigger after DMA completes (or immediately for pre-loaded vectors)
     assign dp_start  = ctrl_start_pulse;
 
-    // Interrupt generation
-    reg irq_pending;
+    // ---- SEU control logic ----
+    reg [1:0] seu_status_reg;
+    reg       seu_start_prev;
+    wire       seu_start_pulse;
+
+    assign seu_start_pulse = seu_ctrl[0] & ~seu_start_prev;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            seu_status_reg <= 2'd0;
+            seu_start_prev <= 1'b0;
+        end else begin
+            seu_start_prev <= seu_ctrl[0];
+
+            if (seu_ctrl[1]) begin // SEU RESET
+                seu_status_reg <= 2'd0;
+            end else if (seu_start_pulse && !seu_busy) begin
+                seu_status_reg <= 2'd1; // BUSY
+            end else if (seu_done) begin
+                seu_status_reg <= 2'd2; // DONE
+            end
+        end
+    end
+
+    assign seu_start = seu_start_pulse & (seu_status_reg == 2'd0);
+
+    // ---- IRQ: W1C clear detection from AXI writes ----
+    wire wr_int_status  = s_axi_awvalid && s_axi_wvalid && s_axi_awready
+                          && (s_axi_awaddr == 12'h028);
+    wire wr_seu_irq_st  = s_axi_awvalid && s_axi_wvalid && s_axi_awready
+                          && (s_axi_awaddr == 12'h04C);
+
+    // ---- Combined IRQ: SPU completion OR SEU completion ----
+    reg irq_pending_spu;
+    reg irq_pending_seu;
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
-            irq_pending <= 1'b0;
+            irq_pending_spu <= 1'b0;
         else if (dp_done && int_mask[0])
-            irq_pending <= 1'b1;
-        else if (int_status[0]) // clear on write-1-to-clear
-            irq_pending <= 1'b0;
+            irq_pending_spu <= 1'b1;
+        else if (wr_int_status && s_axi_wdata[0])
+            irq_pending_spu <= 1'b0;
     end
-    assign irq = irq_pending;
-    assign int_status = {30'd0, irq_pending, 1'b0};
 
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            irq_pending_seu <= 1'b0;
+        else if (seu_done && seu_ctrl[2])
+            irq_pending_seu <= 1'b1;
+        else if ((wr_int_status && s_axi_wdata[2]) ||
+                 (wr_seu_irq_st && s_axi_wdata[2]))
+            irq_pending_seu <= 1'b0;
+    end
+
+    wire irq_pending = irq_pending_spu | irq_pending_seu;
+    assign irq = irq_pending;
+
+    // int_status: bit0 = SPU done, bit1 = DMA error, bit2 = SEU done
+    assign int_status = {29'd0, irq_pending_seu, dma_error, irq_pending_spu};
+
+    // SEU IRQ status readback for register file
+    assign seu_irq_status = {29'd0, irq_pending_seu, 2'd0};
+
+    // SEU tree result = total entries computed
+    wire [31:0] seu_tree_result = seu_tree_count;
     assign status = {30'd0, status_reg};
 
     // ---- Register File ----
@@ -154,7 +233,16 @@ module spu_top #(
         .result_idx   (dp_result_idx),
         .result_score (dp_result_score),
         .int_mask     (int_mask),
-        .int_status_io(int_status)
+        .int_status_io(int_status),
+        // SEU registers
+        .seu_ctrl      (seu_ctrl),
+        .seu_status    (seu_tree_status),
+        .seu_depth     (seu_depth),
+        .seu_offset    (seu_offset),
+        .seu_tree_addr (seu_tree_addr),
+        .seu_tree_result(seu_tree_result),
+        .seu_prob_base (seu_prob_base),
+        .seu_irq_status(seu_irq_status)
     );
 
     // ---- DMA Controller ----
@@ -182,14 +270,26 @@ module spu_top #(
         .vmem_wen     (vmem_a_wen)
     );
 
-    // ---- Vector Memory ----
+    // DMA only drives lower 16 bits; upper 2 bits are zero
+    assign vmem_a_addr[17:16] = 2'd0;
+
+    // ---- Vector Memory (4-port shared pool) ----
     spu_vecmem u_vmem (
         .clk    (clk),
+        // Port A: DMA writes
         .a_addr (vmem_a_addr),
         .a_wdata(vmem_a_wdata),
         .a_wen  (vmem_a_wen),
+        // Port B: dot-product reads
         .b_addr (vmem_b_addr),
-        .b_rdata(vmem_b_rdata)
+        .b_rdata(vmem_b_rdata),
+        // Port C: SEU tree writes
+        .c_addr (seu_vmem_c_addr),
+        .c_wdata(seu_vmem_c_wdata),
+        .c_wen  (seu_vmem_c_wen),
+        // Port D: SEU probability reads
+        .d_addr (seu_vmem_d_addr),
+        .d_rdata(seu_vmem_d_rdata)
     );
 
     // ---- Dot-Product Engine ----
@@ -207,6 +307,28 @@ module spu_top #(
         .vec_rdata    (vmem_b_rdata),
         .result_idx   (dp_result_idx),
         .result_score (dp_result_score)
+    );
+
+    // ---- SEU Tree Predictor ----
+    seu_tree u_seu (
+        .clk          (clk),
+        .rst_n        (rst_n),
+        .start        (seu_start),
+        .seu_reset    (seu_ctrl[1]),
+        .busy         (seu_busy),
+        .done         (seu_done),
+        .depth        (seu_depth),
+        .offset       (seu_offset),
+        .tree_addr    (seu_tree_addr),
+        .prob_base    (seu_prob_base),
+        .vmem_c_addr  (seu_vmem_c_addr),
+        .vmem_c_wdata (seu_vmem_c_wdata),
+        .vmem_c_wen   (seu_vmem_c_wen),
+        .vmem_d_addr  (seu_vmem_d_addr),
+        .vmem_d_rdata (seu_vmem_d_rdata),
+        .tree_status  (seu_tree_status),
+        .tree_count   (seu_tree_count),
+        .irq_seu      (seu_irq_line)
     );
 
 endmodule

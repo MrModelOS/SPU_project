@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
 // SPU Testbench
-// Tests: register read/write, vector load, search, IRQ.
+// Tests: register read/write, vector load, search, IRQ, SEU tree generation.
 module tb_spu;
 
     reg         clk;
@@ -74,7 +74,7 @@ module tb_spu;
     initial clk = 0;
     always #5 clk = ~clk; // 100 MHz
 
-    // Register map
+    // ---- Register map — SPU core ----
     localparam REG_CTRL         = 12'h000;
     localparam REG_STATUS       = 12'h004;
     localparam REG_VEC_COUNT    = 12'h008;
@@ -85,6 +85,16 @@ module tb_spu;
     localparam REG_DEVICE_ID    = 12'h020;
     localparam REG_INT_MASK     = 12'h024;
     localparam REG_INT_STATUS   = 12'h028;
+
+    // ---- Register map — SEU ----
+    localparam REG_SEU_CTRL       = 12'h030;
+    localparam REG_SEU_STATUS     = 12'h034;
+    localparam REG_SEU_DEPTH      = 12'h038;
+    localparam REG_SEU_OFFSET     = 12'h03C;
+    localparam REG_SEU_TREE_ADDR  = 12'h040;
+    localparam REG_SEU_TREE_RES   = 12'h044;
+    localparam REG_SEU_PROB_BASE  = 12'h048;
+    localparam REG_SEU_IRQ_STATUS = 12'h04C;
 
     task axi_write(input [11:0] addr, input [31:0] data);
         begin
@@ -145,9 +155,13 @@ module tb_spu;
 
         $display("=== SPU Testbench ===");
 
-        // Test 1: Read DEVICE_ID
+        // ===================================================================
+        // SPU Core Tests (T1–T9)
+        // ===================================================================
+
+        // Test 1: Read DEVICE_ID (should be 0x00000003 after SEU update)
         axi_read(REG_DEVICE_ID, rdata_val);
-        $display("T1: DEVICE_ID = 0x%08h (expected 0x00000001)", rdata_val);
+        $display("T1: DEVICE_ID = 0x%08h (expected 0x00000003)", rdata_val);
 
         // Test 2: Read MAGIC
         axi_read(12'h0FC, rdata_val);
@@ -160,8 +174,8 @@ module tb_spu;
         $display("T3: STATUS after reset = %0d (expected 0)", rdata_val);
 
         // Test 4: Set parameters
-        axi_write(REG_VEC_COUNT, 32'd100);
-        axi_write(REG_DIMENSION, 32'd128);
+        axi_write(REG_VEC_COUNT, 32'd4);
+        axi_write(REG_DIMENSION, 32'd4);
         axi_read(REG_VEC_COUNT, rdata_val);
         $display("T4: VEC_COUNT = %0d", rdata_val);
         axi_read(REG_DIMENSION, rdata_val);
@@ -177,14 +191,14 @@ module tb_spu;
         axi_read(REG_TARGET_ADDR, rdata_val);
         $display("T6: TARGET_ADDR = 0x%08h", rdata_val);
 
-        // Test 7: Start search (will complete immediately since vectors are empty)
+        // Test 7: Start search
         axi_write(REG_CTRL, 32'h0000_0005); // INT_EN + START
         #20;
         axi_read(REG_STATUS, rdata_val);
         $display("T7: STATUS after start = %0d", rdata_val);
 
-        // Wait for completion
-        #100;
+        // Wait for completion (4 vecs x 4 dims = ~16 cycles + overhead)
+        #500;
         axi_read(REG_STATUS, rdata_val);
         $display("T7: STATUS after wait = %0d (expected 2=DONE)", rdata_val);
 
@@ -211,6 +225,111 @@ module tb_spu;
         axi_read(REG_STATUS, rdata_val);
         $display("T9: STATUS after 2nd reset = %0d", rdata_val);
 
+        // ===================================================================
+        // SEU Tree Tests (T10–T16)
+        // ===================================================================
+        $display("");
+        $display("--- SEU Tree Tests ---");
+
+        // Test 10: Read SEU registers (default values)
+        axi_read(REG_SEU_CTRL, rdata_val);
+        $display("T10: SEU_CTRL default = 0x%08h (expected 0)", rdata_val);
+
+        axi_read(REG_SEU_STATUS, rdata_val);
+        $display("T10: SEU_STATUS default = 0x%08h (expected 0=READY)", rdata_val);
+
+        axi_read(REG_SEU_DEPTH, rdata_val);
+        $display("T10: SEU_DEPTH default = 0x%08h", rdata_val);
+
+        // Test 11: Configure SEU tree
+        axi_write(REG_SEU_DEPTH, 32'd6);       // depth = 6
+        axi_write(REG_SEU_OFFSET, 32'h0000_F0F0); // branch offsets
+        axi_write(REG_SEU_TREE_ADDR, 32'h0003_0000); // tree base in vmem
+        axi_write(REG_SEU_PROB_BASE, 32'h0003_8000); // prob config base
+
+        axi_read(REG_SEU_DEPTH, rdata_val);
+        $display("T11: SEU_DEPTH = %0d (expected 6)", rdata_val);
+        axi_read(REG_SEU_OFFSET, rdata_val);
+        $display("T11: SEU_OFFSET = 0x%08h", rdata_val);
+        axi_read(REG_SEU_TREE_ADDR, rdata_val);
+        $display("T11: SEU_TREE_ADDR = 0x%08h", rdata_val);
+
+        // Test 12: Start SEU tree generation
+        axi_write(REG_SEU_CTRL, 32'h0000_0005); // IRQ_EN + START
+        #20;
+        axi_read(REG_SEU_STATUS, rdata_val);
+        $display("T12: SEU_STATUS after start = %0d (expected 1=BUSY)", rdata_val);
+
+        // Wait for SEU completion (16 variants x 6 depth = 96 entries, ~300 cycles)
+        #5000;
+        axi_read(REG_SEU_STATUS, rdata_val);
+        $display("T12: SEU_STATUS after wait = %0d (expected 2=DONE)", rdata_val);
+
+        // Test 13: Check SEU tree result register
+        axi_read(REG_SEU_TREE_RES, rdata_val);
+        $display("T13: SEU_TREE_RESULT = 0x%08h", rdata_val);
+
+        // Test 14: Verify SEU interrupt
+        axi_read(REG_INT_STATUS, rdata_val);
+        $display("T14: INT_STATUS with SEU = 0x%08h", rdata_val);
+        $display("T14: IRQ = %b", irq);
+
+        // Clear SEU interrupt
+        axi_write(REG_INT_STATUS, 32'h0000_0004); // bit2 = SEU_DONE
+        #10;
+        axi_read(REG_INT_STATUS, rdata_val);
+        $display("T14: INT_STATUS after SEU clear = 0x%08h", rdata_val);
+
+        // Test 15: Reset SEU and re-run with different depth
+        axi_write(REG_SEU_CTRL, 32'h0000_0002); // SEU RESET
+        axi_write(REG_SEU_CTRL, 32'h0000_0000);
+        axi_read(REG_SEU_STATUS, rdata_val);
+        $display("T15: SEU_STATUS after reset = %0d (expected 0=READY)", rdata_val);
+
+        // Reconfigure with max depth
+        axi_write(REG_SEU_DEPTH, 32'd8);
+        axi_write(REG_SEU_CTRL, 32'h0000_0005); // IRQ_EN + START
+        #6000;
+        axi_read(REG_SEU_STATUS, rdata_val);
+        $display("T15: SEU_STATUS depth=8 = %0d (expected 2=DONE)", rdata_val);
+
+        // Test 16: Simultaneous SPU search + SEU tree
+        $display("");
+        $display("--- Combined SPU + SEU Test ---");
+
+        // Reset both
+        axi_write(REG_CTRL, 32'h0000_0002);
+        axi_write(REG_CTRL, 32'h0000_0000);
+        axi_write(REG_SEU_CTRL, 32'h0000_0002);
+        axi_write(REG_SEU_CTRL, 32'h0000_0000);
+
+        // Configure both
+        axi_write(REG_VEC_COUNT, 32'd4);
+        axi_write(REG_DIMENSION, 32'd4);
+        axi_write(REG_SEU_DEPTH, 32'd5);
+
+        // Start both simultaneously
+        axi_write(REG_CTRL, 32'h0000_0005);        // SPU START
+        axi_write(REG_SEU_CTRL, 32'h0000_0005);    // SEU START
+
+        #20;
+        axi_read(REG_STATUS, rdata_val);
+        $display("T16: SPU_STATUS = %0d", rdata_val);
+        axi_read(REG_SEU_STATUS, rdata_val);
+        $display("T16: SEU_STATUS = %0d", rdata_val);
+
+        // Wait for both to complete (whichever takes longer)
+        #5000;
+        axi_read(REG_STATUS, rdata_val);
+        $display("T16: SPU_STATUS after wait = %0d (expected 2=DONE)", rdata_val);
+        axi_read(REG_SEU_STATUS, rdata_val);
+        $display("T16: SEU_STATUS after wait = %0d (expected 2=DONE)", rdata_val);
+
+        axi_read(REG_INT_STATUS, rdata_val);
+        $display("T16: INT_STATUS combined = 0x%08h", rdata_val);
+        $display("T16: IRQ = %b", irq);
+
+        $display("");
         $display("=== All tests passed ===");
         #100;
         $finish;
