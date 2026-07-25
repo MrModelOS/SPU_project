@@ -210,7 +210,7 @@ int spu_seu_get_tree(spu_t *h, float entries[SPU_SEU_TREE_ENTRIES],
 		     uint32_t *status)
 {
 	struct spu_seu_tree_result result;
-	int i;
+	unsigned i;
 
 	if (!h || !entries) {
 		errno = EINVAL;

@@ -45,10 +45,18 @@ int spu_wait_result(spu_t *h, uint32_t *index, float *score,
  * SEU (Speculative Execution Unit) — Prediction Tree API
  * ======================================================================== */
 
+#ifndef SPU_SEU_MIN_DEPTH
 #define SPU_SEU_MIN_DEPTH  5
+#endif
+#ifndef SPU_SEU_MAX_DEPTH
 #define SPU_SEU_MAX_DEPTH  8
+#endif
+#ifndef SPU_SEU_VARIANTS
 #define SPU_SEU_VARIANTS   16
+#endif
+#ifndef SPU_SEU_TREE_ENTRIES
 #define SPU_SEU_TREE_ENTRIES (SPU_SEU_VARIANTS * SPU_SEU_MAX_DEPTH) /* 128 */
+#endif
 
 /**
  * Configure the SEU prediction tree parameters.

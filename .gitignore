@@ -36,3 +36,4 @@ kernel_module/modules.order
 Thumbs.db
 kernel_module/test_userspace
 qemu/qemu-system-x86_64-spu
+fpga/build/

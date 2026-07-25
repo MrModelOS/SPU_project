@@ -81,12 +81,20 @@
 #define SPU_SEU_STATUS_ERR	0x03U
 
 /* SEU depth limits */
+#ifndef SPU_SEU_MIN_DEPTH
 #define SPU_SEU_MIN_DEPTH	5U
+#endif
+#ifndef SPU_SEU_MAX_DEPTH
 #define SPU_SEU_MAX_DEPTH	8U
+#endif
+#ifndef SPU_SEU_VARIANTS
 #define SPU_SEU_VARIANTS	16U	/* Количество вариантов продолжения */
+#endif
 
 /* SEU tree: 16 branches x max 8 levels = 128 entries (probability scores) */
+#ifndef SPU_SEU_TREE_ENTRIES
 #define SPU_SEU_TREE_ENTRIES	(SPU_SEU_VARIANTS * SPU_SEU_MAX_DEPTH)
+#endif
 
 /* ==========================================================================
  * Прерывания — SPU_REG_INT_STATUS / SPU_REG_INT_MASK

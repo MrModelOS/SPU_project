@@ -1,32 +1,45 @@
-# SPU — Search Processing Unit
+# SPU — Search Processing Unit v0.3
 
-**Аппаратный ускоритель + программный стек для векторного поиска**
+**Аппаратный ускоритель + программный стек для векторного поиска с предиктивной генерацией**
 
 > Обычный поиск ищет слова. Мы ищем смысл.
 
 SPU — концептуальный аппаратный ускоритель для similarity search на float-векторах.
-Проект включает полный стек: от модели чипа с MMIO-регистрами до HTTP API сервера готового к интеграции.
+Проект включает полный стек: от RTL-модели чипа до HTTP API сервера готового к интеграции.
+
+**v0.3:** Добавлен SEU (Speculative Execution Unit) — предиктивное дерево решений,
+генерирующее вероятности ветвления параллельно с dot-product движком.
 
 ---
 
 ## Архитектура
 
 ```
-┌─────────────────────────────────────────────────┐
-│              User Application / CLI             │
-├─────────────┬───────────────────┬───────────────┤
-│ spu_search  │  spu_searchd     │  Python client│
-│  (CLI)      │  (HTTP API)      │  (examples/)  │
-├─────────────┴───────────────────┴───────────────┤
-│              libspu.so  (SDK)                   │
-│         spu_open / spu_load_vector / spu_start  │
-├─────────────────────────────────────────────────┤
-│         /dev/spu  (kernel driver)               │
-│         spu_driver.ko — emulation mode          │
-├─────────────────────────────────────────────────┤
-│         SPU Hardware Model (emulator)           │
-│         MMIO registers, dot-product engine      │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│              User Application / CLI                  │
+├──────────────┬───────────────────┬───────────────────┤
+│ spu_search   │  spu_searchd      │  Python client    │
+│  (CLI)       │  (HTTP API)       │  (examples/)      │
+├──────────────┴───────────────────┴───────────────────┤
+│              libspu.so  (SDK)                        │
+│    spu_open / spu_search / spu_predict_tree          │
+├──────────────────────────────────────────────────────┤
+│         /dev/spu  (kernel driver)                    │
+│         spu_driver.ko — emulation / PCI mode         │
+├──────────────────────────────────────────────────────┤
+│         QEMU SPU Virtual PCI Device                  │
+│         / QEMU spu-pci + kernel driver               │
+├──────────────────────────────────────────────────────┤
+│         FPGA Fabric (Artix-7)                        │
+│  ┌─────────────┐  ┌──────────────┐  ┌─────────────┐ │
+│  │ spu_dotprod  │  │ seu_tree     │  │ spu_dma     │ │
+│  │ (dot-product)│  │ (speculative │  │ (DMA engine)│ │
+│  │              │  │  execution)  │  │             │ │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬──────┘ │
+│         └────────┬─────────┴─────────────────┘       │
+│           spu_vecmem (4-port shared BRAM)            │
+│              spu_regs (MMIO register map)            │
+└──────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -50,128 +63,185 @@ make run-bench
 
 ```
 SPU_project/
-├── Makefile                         # Единая сборка
-├── README.md
-├── LICENSE                          # Apache 2.0
+├ Makefile                          # Единая сборка
+├ README.md
+├ LICENSE                           # Apache 2.0
 │
-├── emulator/                        # Эмулятор аппаратуры
-│   ├── spu_device.h                 # Карта регистров (MMIO + ioctl ABI)
-│   ├── spu_pci.c                    # Ядро вычислений (dot-product engine)
-│   ├── main.c                       # Тестбанк
-│   └── Makefile
+├ emulator/                         # Эмулятор аппаратуры
+│  ├── spu_device.h                 # Карта регистров (MMIO + ioctl ABI)
+│  ├── spu_pci.c                    # Ядро вычислений (dot-product + SEU)
+│  ├── main.c                       # Тестбанк
+│  └── Makefile
 │
-├── kernel_module/                   # Linux kernel driver
-│   ├── spu_driver.c                 # PCI + software emulation (500 строк)
-│   ├── test_userspace.c             # Raw ioctl тест
-│   ├── spu_driver.ko                # Собранный модуль
-│   └── Makefile
+├ kernel_module/                    # Linux kernel driver
+│  ├── spu_driver.c                 # PCI + software emulation
+│  ├── test_userspace.c             # Raw ioctl тест
+│  ├── spu_driver.ko                # Собранный модуль
+│  └── Makefile
 │
-├── sdk/                             # Userspace SDK
-│   ├── include/spu.h                # Публичный C API
-│   ├── src/libspu.c                 # ioctl-обёртка
-│   ├── libspu.so                    # Разделяемая библиотека
-│   ├── examples/spu_demo.c         # Валидация SDK
-│   └── Makefile
+├ sdk/                              # Userspace SDK
+│  ├── include/spu.h                # Публичный C API
+│  ├── src/libspu.c                 # ioctl-обёртка
+│  ├── libspu.so                    # Разделяемая библиотека
+│  ├── examples/spu_demo.c         # Валидация SDK
+│  └── Makefile
 │
-├── tools/                           # CLI-утилиты
-│   ├── spu_search.c                 # Поиск по CSV/бинарной базе
-│   └── test_vectors/small_db.csv    # Тестовые векторы
+├ tools/                            # CLI-утилиты
+│  ├── spu_search.c                 # Поиск по CSV/бинарной базе
+│  └── test_vectors/small_db.csv   # Тестовые векторы
 │
-├── benchmark/                       # Производительность
-│   ├── bench_simd.h                 # Scalar / SSE4.2 / AVX2 / AVX-512
-│   ├── bench_search.c              # Замер throughput
-│   ├── bench_run.sh                # Скрипт запуска
-│   └── Makefile
+├ benchmark/                        # Производительность
+│  ├── bench_simd.h                 # Scalar / SSE4.2 / AVX2 / AVX-512
+│  ├── bench_search.c              # Замер throughput
+│  ├── bench_run.sh                # Скрипт запуска
+│  └── Makefile
 │
-├── examples/
-│   ├── semantic_search/
-│   │   ├── spu_searchd.c           # HTTP REST API сервер
-│   │   └── Makefile
-│   └── spu_client.py              # Python-клиент
+├ examples/
+│  ├── semantic_search/
+│  │  ├── spu_searchd.c           # HTTP REST API сервер
+│  │  └── Makefile
+│  └── spu_client.py              # Python-клиент
 │
-└── .gitignore
+├ fpga/                             # FPGA реализация (Artix-7)
+│  ├── rtl/
+│  │  ├── spu_top.v               # Top-level модуль
+│  │  ├── spu_regs.v              # MMIO регистры (0x00–0x4C)
+│  │  ├── spu_dotprod.v           # Dot-product engine
+│  │  ├── spu_dma.v               # DMA controller
+│  │  ├── spu_vecmem.v            # 4-портовая shared BRAM
+│  │  └── seu_tree.v              # SEU предиктивное дерево
+│  ├── sim/
+│  │  └── tb_spu.v                # Testbench (T1–T16)
+│  ├── constraints/
+│  │  └── spu_artix7.xdc          # Pin constraints (Artix-7)
+│  ├── scripts/
+│  │  ├── vivado_synth.tcl        # Vivado synthesis flow
+│  │  └── vivado_program.tcl      # JTAG programming
+│  └── Makefile                    # sim / synth / lint targets
+│
+└ .gitignore
 ```
 
 ---
 
 ## Компоненты
 
-### 1. Эмулятор (`emulator/`)
+### 1. FPGA RTL (`fpga/rtl/`)
 
-Стандalone-тест, симулирующий SPU-чип в userspace.
-Реализует MMIO-регистры, DMA-эмуляцию и dot-product движок.
+Реализация на Xilinx Artix-7 (xc7a35tcpg236-1):
 
+| Модуль | Описание |
+|--------|----------|
+| `spu_top.v` | Top-level: UART ↔ AXI-Lite bridge, IRQ aggregation |
+| `spu_regs.v` | Register map: SPU + SEU (0x00–0x4C) |
+| `spu_dotprod.v` | Pipeline dot-product engine (1-cycle/iter) |
+| `spu_dma.v` | DMA controller: FIFO ↔ vector memory |
+| `spu_vecmem.v` | 4-port shared BRAM (256K × 32-bit), DMA>SEU priority |
+| `seu_tree.v` | SEU tree generator: FSM + LFSR probability scoring |
+
+**SEU Registers (BAR0):**
+
+| Offset | Name | Description |
+|--------|------|-------------|
+| `0x30` | SEU_CTRL | SEU control (start/reset/irq_en/tree_16b) |
+| `0x34` | SEU_STATUS | SEU status (0=ready, 1=busy, 2=done, 3=error) |
+| `0x38` | SEU_DEPTH | Tree depth (5..8) |
+| `0x3C` | SEU_OFFSET | Branch offsets (packed) |
+| `0x40` | SEU_TREE_ADDR | Base address in vector memory for tree |
+| `0x44` | SEU_TREE_RESULT | Tree result base address |
+| `0x48` | SEU_PROB_BASE | Probability configuration base |
+| `0x4C` | SEU_IRQ_STATUS | SEU interrupt status (RW1C) |
+
+**Simulation (16 test cases):**
 ```bash
-cd emulator && make && ./spu_emulator
+cd fpga && make sim     # iverilog → all tests pass
 ```
 
-Регистры SPU (BAR0, 4 KiB):
+**Synthesis (Vivado):**
+```bash
+cd fpga && make synth   # → spu_artix7.bit
+```
 
-| Offset | Имя | Описание |
-|--------|-----|----------|
-| `0x00` | CTRL | Управление (start/reset/irq_en) |
-| `0x04` | STATUS | READY / BUSY / DONE |
-| `0x08` | VEC_COUNT | Количество векторов |
-| `0x0C` | DIMENSION | Размерность |
-| `0x18` | RESULT_IDX | Индекс лучшего совпадения |
-| `0x1C` | RESULT_SCORE | Dot-product score |
+**Pin mapping:** `fpga/constraints/spu_artix7.xdc`
+Adjust pin names/numbers for your board's schematic.
 
-### 2. Kernel Module (`kernel_module/`)
+---
+
+### 2. QEMU Virtual Device (`emulator/`)
+
+PCI-устройство SPU для QEMU. Поддерживает:
+
+- MMIO регистры (SPU: 0x00–0x2C, SEU: 0x30–0x4C)
+- Dot-product движок (硬件加速)
+- SEU предиктивное дерево
+- DMA engine для загрузки векторов
+- Interrupt-driven результаты (IRQ line)
+
+VMState version: 3 (совместимо с сохранением состояния)
+
+Запуск:
+```bash
+# Эмулятор standalone
+cd emulator && make && ./spu_emulator
+
+# Как QEMU PCI-устройство (с кастомным QEMU)
+qemu-system-x86_64 -device spu-pci ...
+```
+
+---
+
+### 3. Kernel Module (`kernel_module/`)
 
 Два режима работы:
-- **emulation=1** (по умолчанию) — программная эмуляция в ядре через `kzalloc`/`vzalloc`
-- **emulation=0** — реальный PCI-драйвер с MMIO через `pci_iomap`
+- **emulation=1** (по умолчанию) — программная эмуляция в ядре
+- **emulation=0** — реальный PCI-драйвер с MMIO
 
 ```bash
-# Загрузить модуль с эмуляцией
 sudo insmod kernel_module/spu_driver.ko emulation=1
-
-# Проверить
 ls -la /dev/spu
-
-# Выгрузить
 sudo rmmod spu_driver
 ```
 
-### 3. SDK — `libspu.so` (`sdk/`)
+Поддерживает SEU: `ioctl(SEU_CONFIG)`, `ioctl(SEU_START)`, `ioctl(SEU_GET_TREE)`.
+
+---
+
+### 4. SDK — `libspu.so` (`sdk/`)
 
 Тонкая C-обёртка над ioctl `/dev/spu`:
 
 ```c
-spu_t *spu = spu_open(NULL);              // открыть /dev/spu
-spu_reset(spu);                           // сброс
-spu_configure(spu, 1000, 128);            // 1000 векторов, dim=128
-spu_load_vector(spu, i, data, 128);       // загрузить вектор
-spu_set_target(spu, query, 128);          // задать запрос
-spu_start(spu);                           // запуск поиска
-spu_wait_result(spu, &idx, &score, &st, 5000);  // ждать результат
+/* SPU: similarity search */
+spu_t *spu = spu_open(NULL);
+spu_reset(spu);
+spu_configure(spu, 1000, 128);
+spu_load_vector(spu, i, data, 128);
+spu_set_target(spu, query, 128);
+spu_start(spu);
+spu_wait_result(spu, &idx, &score, &status, 5000);
+
+/* SEU: предиктивная генерация дерева */
+float entries[128];
+spu_predict_tree(spu, depth=6, offset=0xF0F0, entries, 5000);
+
 spu_close(spu);
 ```
 
 Ограничения: до 1000 векторов, до 768 измерений (аппаратные лимиты чипа).
 
-### 4. CLI Поиск (`tools/spu_search`)
+---
+
+### 5. CLI Поиск (`tools/spu_search`)
 
 ```bash
-# Сгенерировать тестовую базу
 ./tools/spu_search --generate 5000 128 --db vectors.csv
-
-# Поиск по CSV-базе
 ./tools/spu_search --db vectors.csv --query "0.1;0.2;0.3;0.4" --top 5
-
-# Поиск из бинарного файла
 ./tools/spu_search --db vectors.bin --query-file query.bin --top 10
 ```
 
-Форматы данных:
-- **CSV:** каждая строка — вектор, значения через `;`
-- **Binary:** `uint32 count` + `uint32 dim` + `count × dim` float32
+---
 
-Автоматическая batch-обработка по 1000 векторов с агрегацией top-K.
-
-### 5. SIMD Бенчмарк (`benchmark/`)
-
-Четыре реализации dot-product с автодетекцией CPU:
+### 6. SIMD Бенчмарк (`benchmark/`)
 
 | Метод | Ширина | Интрументы |
 |-------|--------|------------|
@@ -181,65 +251,24 @@ spu_close(spu);
 | AVX-512 | 16 float | `_mm512_dp_ps` + FMA |
 
 ```bash
-# Быстрый тест
 ./benchmark/bench_search --vectors 10000 --dim 128
-
-# Полный прогон
 ./benchmark/bench_search --full
 ```
 
-Результаты (Intel i5-1135G7):
+---
 
-| Конфигурация | Scalar | SSE4.2 | AVX2 | AVX-512 | Ускорение |
-|---|---|---|---|---|---|
-| 10K × dim=128 | 2.56ms | 1.08ms | 0.59ms | 0.59ms | **4.3x** |
-| 100K × dim=128 | 26.2ms | 9.18ms | 8.01ms | 6.49ms | **4.0x** |
-| 10K × dim=768 | 22.1ms | 5.58ms | 3.87ms | 3.37ms | **6.6x** |
-
-### 6. HTTP Semantic Search API (`examples/semantic_search/`)
-
-Минимальный HTTP-сервер на чистых POSIX sockets + fork().
-Без внешних зависимостей — только C11 + libc.
+### 7. HTTP Semantic Search API (`examples/semantic_search/`)
 
 ```bash
-# Запуск с предзагруженной базой
 ./examples/semantic_search/spu_searchd --port 8080 --db vectors.bin
 ```
-
-Эндпоинты:
 
 | Метод | Путь | Описание |
 |-------|------|----------|
 | GET | `/health` | `{"status":"ok"}` |
 | GET | `/status` | `{"count":N,"dim":D,"status":"ready"}` |
-| POST | `/load` | `{"file":"/path/to/db.bin"}` — загрузить базу |
-| POST | `/search` | `{"vector":[...],"top_k":5}` — поиск |
-
-Пример:
-```bash
-curl -X POST http://localhost:8080/search \
-  -H "Content-Type: application/json" \
-  -d '{"vector":[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8],"top_k":3}'
-```
-
-Ответ:
-```json
-{
-  "results": [
-    {"index": 0, "score": 2.580000},
-    {"index": 4, "score": 2.340000},
-    {"index": 8, "score": 1.920000}
-  ],
-  "count": 3
-}
-```
-
-### 7. Python-клиент (`examples/spu_client.py`)
-
-```bash
-pip install requests
-python3 examples/spu_client.py
-```
+| POST | `/load` | `{"file":"/path/to/db.bin"}` |
+| POST | `/search` | `{"vector":[...],"top_k":5}` |
 
 ---
 
@@ -247,8 +276,9 @@ python3 examples/spu_client.py
 
 - Linux (для kernel module и `/dev/spu`)
 - GCC с поддержкой C11
-- Kernel headers (только для сборки `.ko`)
-- Никаких внешних библиотек
+- Icarus Verilog (для симуляции FPGA)
+- Vivado (для синтеза на Artix-7)
+- Никаких внешних библиотек (кроме libc)
 
 ## Roadmap
 
@@ -263,6 +293,14 @@ python3 examples/spu_client.py
 - [x] DMA engine для аппаратной загрузки векторов
 - [x] Interrupt-driven результаты (IRQ handler в драйвере)
 - [x] FPGA RTL (Verilog: spu_regs, spu_dotprod, spu_dma, spu_vecmem, spu_top)
+- [x] SEU — Speculative Execution Unit (предиктивное дерево решений)
+- [x] SEU: 4-портовая shared BRAM (DMA>SEU приоритет записи)
+- [x] SEU: combined IRQ (SPU_DONE | SEU_DONE, W1C clear)
+- [x] SEU testbench: 16 тест-кейсов (T1–T16)
+- [x] Artix-7 FPGA deployment (XDC constraints, Vivado scripts)
+- [ ] PYNQ / Zynq PS integration (AXI-HPM ↔ AXI-Slave bridge)
+- [ ] Python SDK bindings
+- [ ] SEU: runtime probability profiling via DMA readback
 
 ## Лицензия
 
