@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-spu_client.py — Python client for SPU Search HTTP API
+sppu_client.py — Python client for SPPU Search HTTP API
 
-Demonstrates integration with spu_searchd (semantic search server).
+Demonstrates integration with sppu_searchd (semantic search server).
 Requires: pip install requests
 """
 
@@ -47,7 +47,7 @@ def search(vector, top_k=5):
 
 
 def main():
-    print(f"[*] Connecting to SPU daemon at {BASE_URL}")
+    print(f"[*] Connecting to SPPU daemon at {BASE_URL}")
 
     # 1. Health check
     try:
@@ -55,7 +55,7 @@ def main():
         print(f"[+] Health: {h}")
     except requests.ConnectionError:
         print(f"[-] Cannot connect to {BASE_URL}")
-        print("    Start daemon: ./examples/semantic_search/spu_searchd --port 8080 --db vectors.bin")
+        print("    Start daemon: ./examples/semantic_search/sppu_searchd --port 8080 --db vectors.bin")
         sys.exit(1)
 
     # 2. Load database

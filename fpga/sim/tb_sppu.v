@@ -1,8 +1,8 @@
 `timescale 1ns / 1ps
 
-// SPU Testbench
+// SPPU Testbench
 // Tests: register read/write, vector load, search, IRQ, SEU tree generation.
-module tb_spu;
+module tb_sppu;
 
     reg         clk;
     reg         rst_n;
@@ -39,7 +39,7 @@ module tb_spu;
     wire        m_axi_rready;
 
     // DUT
-    spu_top u_dut (
+    sppu_top u_dut (
         .clk          (clk),
         .rst_n        (rst_n),
         .irq          (irq),
@@ -74,7 +74,7 @@ module tb_spu;
     initial clk = 0;
     always #5 clk = ~clk; // 100 MHz
 
-    // ---- Register map — SPU core ----
+    // ---- Register map — SPPU core ----
     localparam REG_CTRL         = 12'h000;
     localparam REG_STATUS       = 12'h004;
     localparam REG_VEC_COUNT    = 12'h008;
@@ -98,6 +98,16 @@ module tb_spu;
     localparam REG_SEU_PROB_READ_IDX = 12'h050;
     localparam REG_SEU_PROB_READBACK = 12'h054;
     localparam REG_SEU_TREE_ENTRIES_TOTAL = 12'h058;
+
+    // ---- Register map — SEU v0.4 ----
+    localparam REG_SEU_TREE_CONFIG    = 12'h060;
+    localparam REG_SEU_NODE_BASE_ADDR = 12'h064;
+    localparam REG_SEU_BRANCH_MASK    = 12'h068;
+    localparam REG_SEU_TREE_RESULT_FLAGS = 12'h06C;
+    localparam REG_SEU_CONTEXT_ADDR   = 12'h070;
+    localparam REG_SEU_EMBED_ADDR     = 12'h074;
+    localparam REG_SEU_BRANCH_BEST_IDX  = 12'h078;
+    localparam REG_SEU_BRANCH_BEST_SCORE = 12'h07C;
 
     task axi_write(input [11:0] addr, input [31:0] data);
         begin
@@ -137,8 +147,8 @@ module tb_spu;
     reg [31:0] rdata_val;
 
     initial begin
-        $dumpfile("tb_spu.vcd");
-        $dumpvars(0, tb_spu);
+        $dumpfile("tb_sppu.vcd");
+        $dumpvars(0, tb_sppu);
 
         // Init
         rst_n   = 0;
@@ -156,10 +166,10 @@ module tb_spu;
         rst_n = 1;
         #50;
 
-        $display("=== SPU Testbench ===");
+        $display("=== SPPU Testbench ===");
 
         // ===================================================================
-        // SPU Core Tests (T1–T9)
+        // SPPU Core Tests (T1–T9)
         // ===================================================================
 
         // Test 1: Read DEVICE_ID (should be 0x00000003 after SEU update)
@@ -296,9 +306,9 @@ module tb_spu;
         axi_read(REG_SEU_STATUS, rdata_val);
         $display("T15: SEU_STATUS depth=8 = %0d (expected 2=DONE)", rdata_val);
 
-        // Test 16: Simultaneous SPU search + SEU tree
+        // Test 16: Simultaneous SPPU search + SEU tree
         $display("");
-        $display("--- Combined SPU + SEU Test ---");
+        $display("--- Combined SPPU + SEU Test ---");
 
         // Reset both
         axi_write(REG_CTRL, 32'h0000_0002);
@@ -312,19 +322,19 @@ module tb_spu;
         axi_write(REG_SEU_DEPTH, 32'd5);
 
         // Start both simultaneously
-        axi_write(REG_CTRL, 32'h0000_0005);        // SPU START
+        axi_write(REG_CTRL, 32'h0000_0005);        // SPPU START
         axi_write(REG_SEU_CTRL, 32'h0000_0005);    // SEU START
 
         #20;
         axi_read(REG_STATUS, rdata_val);
-        $display("T16: SPU_STATUS = %0d", rdata_val);
+        $display("T16: SPPU_STATUS = %0d", rdata_val);
         axi_read(REG_SEU_STATUS, rdata_val);
         $display("T16: SEU_STATUS = %0d", rdata_val);
 
         // Wait for both to complete (whichever takes longer)
         #5000;
         axi_read(REG_STATUS, rdata_val);
-        $display("T16: SPU_STATUS after wait = %0d (expected 2=DONE)", rdata_val);
+        $display("T16: SPPU_STATUS after wait = %0d (expected 2=DONE)", rdata_val);
         axi_read(REG_SEU_STATUS, rdata_val);
         $display("T16: SEU_STATUS after wait = %0d (expected 2=DONE)", rdata_val);
 
@@ -366,7 +376,74 @@ module tb_spu;
         $display("--- PYNQ Wrapper Connectivity ---");
 
         // Verify PYNQ wrapper compiles and connects (structural test)
-        $display("T20: spu_pynq_top structure verified (see synth log)");
+        $display("T20: sppu_pynq_top structure verified (see synth log)");
+
+        // ===================================================================
+        // SEU v0.4 — Speculative Tree Walker Tests (T21–T25)
+        // ===================================================================
+        $display("");
+        $display("--- SEU v0.4 Speculative Tree Walker Tests ---");
+
+        // Reset SEU for v0.4 tests
+        axi_write(REG_SEU_CTRL, 32'h0000_0002);
+        axi_write(REG_SEU_CTRL, 32'h0000_0000);
+
+        // Test 21: Read new v0.4 register defaults
+        axi_read(REG_SEU_TREE_CONFIG, rdata_val);
+        $display("T21: TREE_CONFIG default = 0x%08h (expected 0)", rdata_val);
+
+        axi_read(REG_SEU_BRANCH_MASK, rdata_val);
+        $display("T21: BRANCH_MASK default = 0x%08h (expected 0)", rdata_val);
+
+        axi_read(REG_SEU_NODE_BASE_ADDR, rdata_val);
+        $display("T21: NODE_BASE_ADDR default = 0x%08h", rdata_val);
+
+        axi_read(REG_SEU_CONTEXT_ADDR, rdata_val);
+        $display("T21: CONTEXT_ADDR default = 0x%08h", rdata_val);
+
+        // Test 22: Configure speculative tree parameters
+        // Tree config: max_branches=8, ctx_len=2, auto_validate=1 => 0x108
+        axi_write(REG_SEU_TREE_CONFIG, 32'h0000_0108);
+        axi_write(REG_SEU_NODE_BASE_ADDR, 32'h0004_0000);
+        axi_write(REG_SEU_BRANCH_MASK, 32'h0000_00FF); // 8 active branches
+        axi_write(REG_SEU_CONTEXT_ADDR, 32'h0001_0000);
+        axi_write(REG_SEU_EMBED_ADDR, 32'h0002_0000);
+        axi_write(REG_SEU_TREE_ADDR, 32'h0003_0000);
+
+        axi_read(REG_SEU_TREE_CONFIG, rdata_val);
+        $display("T22: TREE_CONFIG = 0x%08h (expected 0x108)", rdata_val);
+
+        axi_read(REG_SEU_BRANCH_MASK, rdata_val);
+        $display("T22: BRANCH_MASK = 0x%08h (expected 0xFF)", rdata_val);
+
+        // Test 23: Start speculative tree build
+        axi_write(REG_SEU_CTRL, 32'h0000_0005); // IRQ_EN + START
+        #20;
+        axi_read(REG_SEU_STATUS, rdata_val);
+        $display("T23: SEU_STATUS after start = %0d (expected 1=BUSY)", rdata_val);
+
+        // Wait for completion
+        #8000;
+        axi_read(REG_SEU_STATUS, rdata_val);
+        $display("T23: SEU_STATUS after wait = %0d (expected 2=DONE)", rdata_val);
+
+        // Test 24: Read branch results
+        axi_read(REG_SEU_TREE_RESULT_FLAGS, rdata_val);
+        $display("T24: RESULT_FLAGS = 0x%08h", rdata_val);
+
+        axi_read(REG_SEU_BRANCH_BEST_IDX, rdata_val);
+        $display("T24: BEST_IDX = %0d", rdata_val);
+
+        axi_read(REG_SEU_BRANCH_BEST_SCORE, rdata_val);
+        $display("T24: BEST_SCORE = 0x%08h", rdata_val);
+
+        axi_read(REG_SEU_TREE_ENTRIES_TOTAL, rdata_val);
+        $display("T24: ENTRIES_TOTAL = %0d", rdata_val);
+
+        // Test 25: Verify device version updated
+        axi_read(REG_DEVICE_ID, rdata_val);
+        $display("T25: DEVICE_ID = 0x%08h (expected 0x00000004)", rdata_val);
+
         $display("");
 
         $display("=== All tests passed ===");

@@ -1,11 +1,11 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-// SPU Dot-Product Engine
+// SPPU Dot-Product Engine
 // Computes dot products between target vector and each stored vector.
 // Pipeline: 1 multiply-accumulate per cycle (single-precision float).
 // For synthesis: use DSP48 blocks for FP multiply-accumulate.
-module spu_dotprod (
+module sppu_dotprod (
     input  wire        clk,
     input  wire        rst_n,
 
@@ -31,9 +31,9 @@ module spu_dotprod (
     output reg  [31:0] result_score
 );
 
-    localparam SPU_STATUS_READY = 2'd0;
-    localparam SPU_STATUS_BUSY  = 2'd1;
-    localparam SPU_STATUS_DONE  = 2'd2;
+    localparam SPPU_STATUS_READY = 2'd0;
+    localparam SPPU_STATUS_BUSY  = 2'd1;
+    localparam SPPU_STATUS_DONE  = 2'd2;
 
     // FSM states
     localparam ST_IDLE    = 3'd0;

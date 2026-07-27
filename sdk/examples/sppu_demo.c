@@ -1,5 +1,5 @@
 /*
- * spu_demo — validation trap via libspu (exact match at index 7)
+ * sppu_demo — validation trap via libsppu (exact match at index 7)
  */
 
 #include <stdio.h>
@@ -7,7 +7,7 @@
 #include <time.h>
 #include <string.h>
 
-#include "spu.h"
+#include "sppu.h"
 
 static float frand(void)
 {
@@ -16,7 +16,7 @@ static float frand(void)
 
 int main(void)
 {
-	spu_t *spu;
+	sppu_t *sppu;
 	float bank[10][8];
 	float target[8];
 	uint32_t index = 0, status = 0;
@@ -26,29 +26,29 @@ int main(void)
 
 	srand((unsigned)time(NULL));
 
-	printf("=== SPU SDK Demo (libspu) ===\n");
+	printf("=== SPPU SDK Demo (libsppu) ===\n");
 
-	spu = spu_open(NULL);
-	if (!spu) {
-		perror("spu_open");
+	sppu = sppu_open(NULL);
+	if (!sppu) {
+		perror("sppu_open");
 		return 1;
 	}
 
-	if (spu_reset(spu) < 0) {
-		perror("spu_reset");
+	if (sppu_reset(sppu) < 0) {
+		perror("sppu_reset");
 		goto out;
 	}
 
-	if (spu_configure(spu, 10, 8) < 0) {
-		perror("spu_configure");
+	if (sppu_configure(sppu, 10, 8) < 0) {
+		perror("sppu_configure");
 		goto out;
 	}
 
 	for (i = 0; i < 10; i++) {
 		for (d = 0; d < 8; d++)
 			bank[i][d] = frand();
-		if (spu_load_vector(spu, (uint32_t)i, bank[i], 8) < 0) {
-			perror("spu_load_vector");
+		if (sppu_load_vector(sppu, (uint32_t)i, bank[i], 8) < 0) {
+			perror("sppu_load_vector");
 			goto out;
 		}
 	}
@@ -57,23 +57,23 @@ int main(void)
 		target[d] = frand();
 
 	memcpy(bank[7], target, sizeof(target));
-	if (spu_load_vector(spu, 7, bank[7], 8) < 0) {
-		perror("spu_load_vector #7");
+	if (sppu_load_vector(sppu, 7, bank[7], 8) < 0) {
+		perror("sppu_load_vector #7");
 		goto out;
 	}
 
-	if (spu_set_target(spu, target, 8) < 0) {
-		perror("spu_set_target");
+	if (sppu_set_target(sppu, target, 8) < 0) {
+		perror("sppu_set_target");
 		goto out;
 	}
 
-	if (spu_start(spu) < 0) {
-		perror("spu_start");
+	if (sppu_start(sppu) < 0) {
+		perror("sppu_start");
 		goto out;
 	}
 
-	if (spu_wait_result(spu, &index, &score, &status, 5000) < 0) {
-		perror("spu_wait_result");
+	if (sppu_wait_result(sppu, &index, &score, &status, 5000) < 0) {
+		perror("sppu_wait_result");
 		goto out;
 	}
 
@@ -88,6 +88,6 @@ int main(void)
 	}
 
 out:
-	spu_close(spu);
+	sppu_close(sppu);
 	return exit_code;
 }

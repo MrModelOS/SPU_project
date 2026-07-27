@@ -1,5 +1,5 @@
 #!/bin/bash
-# bench_run.sh — Run SPU benchmark with different configurations
+# bench_run.sh — Run SPPU benchmark with different configurations
 # Usage: ./bench_run.sh [--full]
 
 set -e
@@ -13,7 +13,7 @@ if [ ! -f "$BENCH" ]; then
 fi
 
 echo "========================================="
-echo " SPU Benchmark Suite"
+echo " SPPU Benchmark Suite"
 echo "========================================="
 
 if [ "$1" = "--full" ]; then

@@ -1,4 +1,4 @@
-# SPU Project — top-level Makefile
+# SPPU Project — top-level Makefile
 # Builds all components: emulator, SDK, tools, benchmark, HTTP daemon
 
 .PHONY: all clean tools sdk benchmark searchd emulator test run-bench

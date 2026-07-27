@@ -9,15 +9,15 @@
 
 # Simulation
 *.vcd
-tb_spu
+tb_sppu
 
 # Binaries
-emulator/spu_emulator
-sdk/libspu.so
-sdk/examples/spu_demo
-tools/spu_search
+emulator/sppu_emulator
+sdk/libsppu.so
+sdk/examples/sppu_demo
+tools/sppu_search
 benchmark/bench_search
-examples/semantic_search/spu_searchd
+examples/semantic_search/sppu_searchd
 
 # Kernel module build
 kernel_module/.cache.mk
@@ -35,5 +35,5 @@ kernel_module/modules.order
 .DS_Store
 Thumbs.db
 kernel_module/test_userspace
-qemu/qemu-system-x86_64-spu
+qemu/qemu-system-x86_64-sppu
 fpga/build/

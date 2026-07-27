@@ -1,10 +1,10 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-// SPU PYNQ/Zynq Top-Level Wrapper
-// Connects spu_top to Zynq PS via AXI GP port.
+// SPPU PYNQ/Zynq Top-Level Wrapper
+// Connects sppu_top to Zynq PS via AXI GP port.
 // For PYNQ-Z2 / PYNQ-Z1 / Zybo-Z7 boards with XC7Z020.
-module spu_pynq_top #(
+module sppu_pynq_top #(
     parameter C_AXI_DATA_WIDTH = 32,
     parameter C_AXI_ADDR_WIDTH = 12
 )(
@@ -66,11 +66,11 @@ module spu_pynq_top #(
     wire        m_axi_rvalid;
     wire        m_axi_rready;
 
-    // ---- SPU Core ----
-    spu_top #(
+    // ---- SPPU Core ----
+    sppu_top #(
         .C_AXI_DATA_WIDTH(C_AXI_DATA_WIDTH),
         .C_AXI_ADDR_WIDTH(C_AXI_ADDR_WIDTH)
-    ) u_spu (
+    ) u_sppu (
         .clk            (clk),
         .rst_n          (rst_n),
         .irq            (irq),
@@ -105,8 +105,8 @@ module spu_pynq_top #(
 
     // ---- LED status ----
     // LED[0] = heartbeat (blinks)
-    // LED[1] = SPU busy
-    // LED[2] = SPU done
+    // LED[1] = SPPU busy
+    // LED[2] = SPPU done
     // LED[3] = SEU busy
     // LED[4] = IRQ active
 

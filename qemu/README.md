@@ -1,7 +1,7 @@
-# SPU QEMU Virtual PCI Device
+# SPPU QEMU Virtual PCI Device
 
-Виртуальное PCI-устройство SPU для QEMU. Позволяет тестировать полный стек
-(SPU driver → SDK → CLI) без реального железа.
+Виртуальное PCI-устройство SPPU для QEMU. Позволяет тестировать полный стек
+(SPPU driver → SDK → CLI) без реального железа.
 
 ## Как это работает
 
@@ -9,17 +9,17 @@
 ┌──────────────────────────────────┐
 │         QEMU Guest (Linux)       │
 │                                  │
-│  spu_driver.ko  ← PCI probe     │
+│  sppu_driver.ko  ← PCI probe     │
 │       ↓                          │
-│  /dev/spu       ← ioctl         │
+│  /dev/sppu       ← ioctl         │
 │       ↓                          │
-│  libspu.so      ← API           │
+│  libsppu.so      ← API           │
 │       ↓                          │
-│  spu_search     ← CLI поиск     │
+│  sppu_search     ← CLI поиск     │
 ├──────────────────────────────────┤
 │       QEMU PCI Bus               │
 │  ┌──────────────────────────┐    │
-│  │ SPU Device (spu_qemu.c)  │    │
+│  │ SPPU Device (sppu_qemu.c)  │    │
 │  │ vendor=0x1234 dev=0x5780 │    │
 │  │                          │    │
 │  │ BAR0: MMIO registers     │    │
@@ -37,25 +37,25 @@
 
 ```bash
 # 1. Скопировать файл устройства в дерево QEMU
-cp spu_qemu.c /usr/src/qemu/hw/misc/
+cp sppu_qemu.c /usr/src/qemu/hw/misc/
 
 # 2. Добавить в hw/misc/Kconfig:
 cat >> /usr/src/qemu/hw/misc/Kconfig << 'EOF'
-config SPU_PCI
-    bool "SPU Search Processing Unit"
+config SPPU_PCI
+    bool "SPPU Search Processing Unit"
     default y
     depends on PCI
 EOF
 
 # 3. Добавить в hw/misc/Makefile.objs:
-echo 'obj-$(CONFIG_SPU_PCI) += spu_qemu.o' >> /usr/src/qemu/hw/misc/Makefile.objs
+echo 'obj-$(CONFIG_SPPU_PCI) += sppu_qemu.o' >> /usr/src/qemu/hw/misc/Makefile.objs
 
 # 4. Пересобрать QEMU
 cd /usr/src/qemu/build
 make -j$(nproc)
 
 # 5. Проверить наличие устройства
-qemu-system-x86_64 -device help | grep spu
+qemu-system-x86_64 -device help | grep sppu
 ```
 
 ### Способ 2: Makefile (автоматизация)
@@ -69,31 +69,31 @@ make    # покажет инструкции
 
 ```bash
 # С ядром и rootfs
-./qemu-spu.sh --kernel /boot/vmlinuz-linux --rootfs rootfs.img
+./qemu-sppu.sh --kernel /boot/vmlinuz-linux --rootfs rootfs.img
 
 # Только с ядром (initramfs)
-./qemu-spu.sh --kernel /boot/vmlinuz-linux
+./qemu-sppu.sh --kernel /boot/vmlinuz-linux
 
 # С отладкой (GDB)
-./qemu-spu.sh --kernel /boot/vmlinuz-linux --debug
+./qemu-sppu.sh --kernel /boot/vmlinuz-linux --debug
 ```
 
 ## Внутри гостя
 
 ```bash
 # Монтируем общие папки
-mount -t 9p -o trans=virtio spu_module /mnt/module
-mount -t 9p -o trans=virtio spu_sdk /mnt/sdk
+mount -t 9p -o trans=virtio sppu_module /mnt/module
+mount -t 9p -o trans=virtio sppu_sdk /mnt/sdk
 
 # Загружаем драйвер (hardware mode, emulation=0)
-insmod /mnt/module/spu_driver.ko emulation=0
+insmod /mnt/module/sppu_driver.ko emulation=0
 
 # Проверяем устройство
 lspci | grep 1234
-ls -la /dev/spu
+ls -la /dev/sppu
 
 # Запускаем SDK demo
-cd /mnt/sdk && make && ./examples/spu_demo
+cd /mnt/sdk && make && ./examples/sppu_demo
 ```
 
 ## Регистры (BAR0)
@@ -109,7 +109,7 @@ cd /mnt/sdk && make && ./examples/spu_demo
 | 0x20 | DEVICE_ID | RO | Версия прошивки |
 | 0x24 | INT_MASK | RW | Маска прерываний |
 | 0x28 | INT_STATUS | RW1C | Статус прерываний |
-| 0xFC | MAGIC | RO | 0x53505520 ("SPU ") |
+| 0xFC | MAGIC | RO | 0x53505520 ("SPPU ") |
 
 ## Лимиты
 

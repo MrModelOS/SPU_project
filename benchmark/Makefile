@@ -1,4 +1,4 @@
-# SPU Benchmark — dot-product search performance
+# SPPU Benchmark — dot-product search performance
 
 CC      ?= gcc
 CFLAGS  ?= -Wall -Wextra -std=c11

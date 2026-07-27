@@ -1,14 +1,14 @@
 /*
- * spu_search — CLI utility for similarity search via /dev/spu
+ * sppu_search — CLI utility for similarity search via /dev/sppu
  *
  * Supports binary (.bin) and CSV vector databases.
- * Processes vectors in batches of SPU_MAX_VECTORS (1000).
+ * Processes vectors in batches of SPPU_MAX_VECTORS (1000).
  *
  * Usage:
- *   spu_search --db vectors.bin --query query.bin --top 5
- *   spu_search --db vectors.csv --query "0.1;0.2;0.3" --top 3
- *   spu_search --db vectors.csv --query-file q.csv --top 10
- *   spu_search --generate 5000 128 --db gen.csv
+ *   sppu_search --db vectors.bin --query query.bin --top 5
+ *   sppu_search --db vectors.csv --query "0.1;0.2;0.3" --top 3
+ *   sppu_search --db vectors.csv --query-file q.csv --top 10
+ *   sppu_search --generate 5000 128 --db gen.csv
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -21,12 +21,12 @@
 #include <math.h>
 #include <time.h>
 
-#include "spu.h"
-#include "spu_device.h"
+#include "sppu.h"
+#include "sppu_device.h"
 
 #define MAX_TOP_K  100
 #define LINE_BUF   8192
-#define BATCH_SIZE SPU_MAX_VECTORS
+#define BATCH_SIZE SPPU_MAX_VECTORS
 
 typedef struct {
 	uint32_t index;
@@ -60,7 +60,7 @@ static int load_binary(const char *path, vec_db_t *db)
 		return -1;
 	}
 
-	if (db->count == 0 || db->dim == 0 || db->dim > SPU_MAX_DIMENSION) {
+	if (db->count == 0 || db->dim == 0 || db->dim > SPPU_MAX_DIMENSION) {
 		fprintf(stderr, "%s: invalid count=%u dim=%u\n",
 			path, db->count, db->dim);
 		fclose(f);
@@ -157,9 +157,9 @@ static int load_csv(const char *path, vec_db_t *db)
 		fclose(f);
 		return -1;
 	}
-	if (dim > SPU_MAX_DIMENSION) {
+	if (dim > SPPU_MAX_DIMENSION) {
 		fprintf(stderr, "%s: dimension %u exceeds max %u\n",
-			path, dim, SPU_MAX_DIMENSION);
+			path, dim, SPPU_MAX_DIMENSION);
 		fclose(f);
 		return -1;
 	}
@@ -236,40 +236,40 @@ static float *parse_inline_query(const char *str, uint32_t *out_dim)
 	return vec;
 }
 
-static int search_batch(spu_t *spu, const vec_db_t *db,
+static int search_batch(sppu_t *sppu, const vec_db_t *db,
 			uint32_t offset, uint32_t batch_count,
 			const float *query, uint32_t dim,
 			uint32_t *best_idx, float *best_score)
 {
-	if (spu_reset(spu) < 0) {
-		perror("spu_reset");
+	if (sppu_reset(sppu) < 0) {
+		perror("sppu_reset");
 		return -1;
 	}
-	if (spu_configure(spu, batch_count, dim) < 0) {
-		perror("spu_configure");
+	if (sppu_configure(sppu, batch_count, dim) < 0) {
+		perror("sppu_configure");
 		return -1;
 	}
 	for (uint32_t i = 0; i < batch_count; i++) {
-		if (spu_load_vector(spu, i,
+		if (sppu_load_vector(sppu, i,
 				    db->data + (size_t)(offset + i) * dim,
 				    dim) < 0) {
-			perror("spu_load_vector");
+			perror("sppu_load_vector");
 			return -1;
 		}
 	}
-	if (spu_set_target(spu, query, dim) < 0) {
-		perror("spu_set_target");
+	if (sppu_set_target(sppu, query, dim) < 0) {
+		perror("sppu_set_target");
 		return -1;
 	}
-	if (spu_start(spu) < 0) {
-		perror("spu_start");
+	if (sppu_start(sppu) < 0) {
+		perror("sppu_start");
 		return -1;
 	}
 
 	uint32_t idx = 0, status = 0;
 	float score = 0.0f;
-	if (spu_wait_result(spu, &idx, &score, &status, 10000) < 0) {
-		perror("spu_wait_result");
+	if (sppu_wait_result(sppu, &idx, &score, &status, 10000) < 0) {
+		perror("sppu_wait_result");
 		return -1;
 	}
 	*best_idx   = offset + idx;
@@ -331,7 +331,7 @@ static void print_results(uint32_t top_k, const vec_db_t *db)
 static void usage(const char *prog)
 {
 	fprintf(stderr,
-		"SPU Search - similarity search via /dev/spu\n\n"
+		"SPPU Search - similarity search via /dev/sppu\n\n"
 		"Usage:\n"
 		"  %s --db <file> --query <vector|file> [--top K]\n"
 		"  %s --db <file> --query-file <file> [--top K]\n"
@@ -401,9 +401,9 @@ int main(int argc, char **argv)
 			fprintf(stderr, "Error: --generate requires --db <output>\n");
 			return 1;
 		}
-		if ((uint32_t)gen_dim > SPU_MAX_DIMENSION) {
+		if ((uint32_t)gen_dim > SPPU_MAX_DIMENSION) {
 			fprintf(stderr, "Error: dim %d exceeds max %u\n",
-				gen_dim, SPU_MAX_DIMENSION);
+				gen_dim, SPPU_MAX_DIMENSION);
 			return 1;
 		}
 		vec_db_t gen;
@@ -495,9 +495,9 @@ int main(int argc, char **argv)
 
 	printf("Query dimension: %u\n", query_dim);
 
-	spu_t *spu = spu_open(NULL);
-	if (!spu) {
-		perror("spu_open (is kernel module loaded?)");
+	sppu_t *sppu = sppu_open(NULL);
+	if (!sppu) {
+		perror("sppu_open (is kernel module loaded?)");
 		free(query); free(db.data);
 		return 1;
 	}
@@ -521,11 +521,11 @@ int main(int argc, char **argv)
 		fprintf(stderr, "  batch %u..%u (%u vectors) ",
 			batch_start, batch_start + batch - 1, batch);
 
-		rc = search_batch(spu, &db, batch_start, batch,
+		rc = search_batch(sppu, &db, batch_start, batch,
 				  query, query_dim, &best_idx, &best_score);
 		if (rc < 0) {
 			fprintf(stderr, "FAILED\n");
-			spu_close(spu);
+			sppu_close(sppu);
 			free(query); free(db.data); free(g_results);
 			return 1;
 		}
@@ -538,7 +538,7 @@ int main(int argc, char **argv)
 
 	print_results(top_k, &db);
 
-	spu_close(spu);
+	sppu_close(sppu);
 	free(query);
 	free(db.data);
 	free(g_results);

@@ -1,4 +1,4 @@
-# SPU QEMU PCI Device
+# SPPU QEMU PCI Device
 #
 # Two build modes:
 #   make          - build as QEMU source tree module
@@ -11,28 +11,28 @@ QEMU_OBJ  ?= $(QEMU_DIR)/build
 .PHONY: all clean
 
 all:
-	@echo "=== SPU QEMU Device ==="
+	@echo "=== SPPU QEMU Device ==="
 	@echo ""
-	@echo "To build this device, copy spu_qemu.c into QEMU source tree:"
+	@echo "To build this device, copy sppu_qemu.c into QEMU source tree:"
 	@echo ""
-	@echo "  1. cp spu_qemu.c $(QEMU_DIR)/hw/misc/"
+	@echo "  1. cp sppu_qemu.c $(QEMU_DIR)/hw/misc/"
 	@echo "  2. Add to $(QEMU_DIR)/hw/misc/Kconfig:"
-	@echo "     config SPU_PCI"
-	@echo "         bool \"SPU Search Processing Unit\""
+	@echo "     config SPPU_PCI"
+	@echo "         bool \"SPPU Search Processing Unit\""
 	@echo "         default y"
 	@echo "         depends on PCI"
 	@echo ""
 	@echo "  3. Add to $(QEMU_DIR)/hw/misc/Makefile.objs:"
-	@echo "     obj-\$(CONFIG_SPU_PCI) += spu_qemu.o"
+	@echo "     obj-\$(CONFIG_SPPU_PCI) += sppu_qemu.o"
 	@echo ""
 	@echo "  4. Rebuild QEMU:"
 	@echo "     cd $(QEMU_OBJ) && make -j\$$(nproc)"
 	@echo ""
 	@echo "Then run with:"
-	@echo "  qemu-system-x86_64 ... -device spu-pci"
+	@echo "  qemu-system-x86_64 ... -device sppu-pci"
 	@echo ""
 	@echo "Or use the convenience script:"
-	@echo "  ./qemu-spu.sh"
+	@echo "  ./qemu-sppu.sh"
 
 clean:
 	rm -f *.o *.so *.ko

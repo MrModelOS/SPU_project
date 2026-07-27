@@ -3,12 +3,12 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
-name = "spu"
+name = "sppu"
 version = "0.3.0"
-description = "Python bindings for SPU (Search Processing Unit) SDK"
+description = "Python bindings for SPPU (Search Processing Unit) SDK"
 requires-python = ">=3.8"
 license = {text = "Apache-2.0"}
-authors = [{name = "SPU Project"}]
+authors = [{name = "SPPU Project"}]
 
 [tool.setuptools.packages.find]
-include = ["spu*"]
+include = ["sppu*"]

@@ -1,11 +1,11 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-// SPU Top-Level Module
+// SPPU Top-Level Module
 // Connects: AXI-Lite registers, DMA controller, vector memory, dot-product engine,
 //           and SEU (Speculative Execution Unit) tree predictor.
-// Synthesizable for Xilinx/Intel FPGA with PCIe hard block.
-module spu_top #(
+// Target: Zynq-7010 (AntMiner XC7Z010 v1.0) — PS via AXI GP, PL for compute.
+module sppu_top #(
     parameter C_AXI_DATA_WIDTH = 32,
     parameter C_AXI_ADDR_WIDTH = 12
 )(
@@ -15,7 +15,7 @@ module spu_top #(
     // Interrupt to host
     output wire        irq,
 
-    // AXI-Lite slave (register access from PCIe)
+    // AXI-Lite slave (register access from PS via AXI GP)
     input  wire [C_AXI_ADDR_WIDTH-1:0] s_axi_awaddr,
     input  wire                        s_axi_awvalid,
     output wire                        s_axi_awready,
@@ -45,7 +45,7 @@ module spu_top #(
     output wire        m_axi_rready
 );
 
-    // ---- Internal wires — SPU core ----
+    // ---- Internal wires — SPPU core ----
     wire [31:0] ctrl;
     wire [31:0] status;
     wire [31:0] vec_count;
@@ -70,6 +70,24 @@ module spu_top #(
     wire [31:0] seu_prob_readback;
     wire [31:0] seu_tree_entries_total;
 
+    // SEU v0.4 — speculative tree walker
+    wire [31:0] seu_tree_config;
+    wire [31:0] seu_node_base_addr;
+    wire [15:0] seu_branch_mask;
+    wire [15:0] seu_tree_result_flags;
+    wire [31:0] seu_context_addr;
+    wire [31:0] seu_embed_addr;
+    wire [31:0] seu_branch_best_idx;
+    wire [31:0] seu_branch_best_score;
+
+    // SEU embedding search interface
+    wire        embed_search_start;
+    wire [31:0] embed_query_addr;
+    wire [31:0] embed_vec_count;
+    wire        embed_search_done;
+    wire [31:0] embed_result_idx;
+    wire [31:0] embed_result_score;
+
     // ---- Dot-product engine wires ----
     wire        dp_start;
     wire        dp_busy;
@@ -90,26 +108,26 @@ module spu_top #(
     wire        seu_start;
     wire        seu_busy;
     wire        seu_done;
-    wire [17:0] seu_vmem_c_addr;
+    wire [11:0] seu_vmem_c_addr;
     wire [31:0] seu_vmem_c_wdata;
     wire        seu_vmem_c_wen;
-    wire [17:0] seu_vmem_d_addr;
+    wire [11:0] seu_vmem_d_addr;
     wire [31:0] seu_vmem_d_rdata;
     wire [31:0] seu_tree_status;
     wire [31:0] seu_tree_count;
     wire [31:0] seu_irq_line;
 
     // ---- Vector memory wires — 4-port ----
-    wire [17:0] vmem_a_addr;
+    wire [11:0] vmem_a_addr;
     wire [31:0] vmem_a_wdata;
     wire        vmem_a_wen;
-    wire [17:0] vmem_b_addr;
+    wire [11:0] vmem_b_addr;
     wire [31:0] vmem_b_rdata;
 
     wire [11:0] dp_target_raddr;
     wire [31:0] dp_target_rdata;
 
-    // ---- SPU control logic ----
+    // ---- SPPU control logic ----
     reg [1:0] status_reg;
     reg       start_prev;
 
@@ -174,17 +192,17 @@ module spu_top #(
     wire wr_seu_irq_st  = s_axi_awvalid && s_axi_wvalid && s_axi_awready
                           && (s_axi_awaddr == 12'h04C);
 
-    // ---- Combined IRQ: SPU completion OR SEU completion ----
-    reg irq_pending_spu;
+    // ---- Combined IRQ: SPPU completion OR SEU completion ----
+    reg irq_pending_sppu;
     reg irq_pending_seu;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
-            irq_pending_spu <= 1'b0;
+            irq_pending_sppu <= 1'b0;
         else if (dp_done && int_mask[0])
-            irq_pending_spu <= 1'b1;
+            irq_pending_sppu <= 1'b1;
         else if (wr_int_status && s_axi_wdata[0])
-            irq_pending_spu <= 1'b0;
+            irq_pending_sppu <= 1'b0;
     end
 
     always @(posedge clk or negedge rst_n) begin
@@ -197,11 +215,11 @@ module spu_top #(
             irq_pending_seu <= 1'b0;
     end
 
-    wire irq_pending = irq_pending_spu | irq_pending_seu;
+    wire irq_pending = irq_pending_sppu | irq_pending_seu;
     assign irq = irq_pending;
 
-    // int_status: bit0 = SPU done, bit1 = DMA error, bit2 = SEU done
-    assign int_status = {29'd0, irq_pending_seu, dma_error, irq_pending_spu};
+    // int_status: bit0 = SPPU done, bit1 = DMA error, bit2 = SEU done
+    assign int_status = {29'd0, irq_pending_seu, dma_error, irq_pending_sppu};
 
     // SEU IRQ status readback for register file
     assign seu_irq_status = {29'd0, irq_pending_seu, 2'd0};
@@ -211,7 +229,7 @@ module spu_top #(
     assign status = {30'd0, status_reg};
 
     // ---- Register File ----
-    spu_regs u_regs (
+    sppu_regs u_regs (
         .clk          (clk),
         .rst_n        (rst_n),
         .s_axi_awaddr (s_axi_awaddr),
@@ -251,11 +269,20 @@ module spu_top #(
         // SEU probability profiling
         .seu_prob_read_idx  (seu_prob_read_idx),
         .seu_prob_readback  (seu_prob_readback),
-        .seu_tree_entries_total(seu_tree_entries_total)
+        .seu_tree_entries_total(seu_tree_entries_total),
+        // SEU v0.4 — speculative tree walker
+        .seu_tree_config    (seu_tree_config),
+        .seu_node_base_addr (seu_node_base_addr),
+        .seu_branch_mask    (seu_branch_mask),
+        .seu_tree_result_flags(seu_tree_result_flags),
+        .seu_context_addr   (seu_context_addr),
+        .seu_embed_addr     (seu_embed_addr),
+        .seu_branch_best_idx(seu_branch_best_idx),
+        .seu_branch_best_score(seu_branch_best_score)
     );
 
     // ---- DMA Controller ----
-    spu_dma u_dma (
+    sppu_dma u_dma (
         .clk          (clk),
         .rst_n        (rst_n),
         .start        (dma_start),
@@ -274,16 +301,13 @@ module spu_top #(
         .m_axi_rdata  (m_axi_rdata),
         .m_axi_rvalid (m_axi_rvalid),
         .m_axi_rready (m_axi_rready),
-        .vmem_waddr   (vmem_a_addr[15:0]),
+        .vmem_waddr   (vmem_a_addr),
         .vmem_wdata   (vmem_a_wdata),
         .vmem_wen     (vmem_a_wen)
     );
 
-    // DMA only drives lower 16 bits; upper 2 bits are zero
-    assign vmem_a_addr[17:16] = 2'd0;
-
-    // ---- Vector Memory (4-port shared pool) ----
-    spu_vecmem u_vmem (
+    // ---- Vector Memory (4-port shared pool, 4K entries) ----
+    sppu_vecmem u_vmem (
         .clk    (clk),
         // Port A: DMA writes
         .a_addr (vmem_a_addr),
@@ -302,7 +326,7 @@ module spu_top #(
     );
 
     // ---- Dot-Product Engine ----
-    spu_dotprod u_dp (
+    sppu_dotprod u_dp (
         .clk          (clk),
         .rst_n        (rst_n),
         .start        (dp_start),
@@ -318,7 +342,7 @@ module spu_top #(
         .result_score (dp_result_score)
     );
 
-    // ---- SEU Tree Predictor ----
+    // ---- SEU Tree Predictor (v0.4 — speculative tree walker) ----
     seu_tree u_seu (
         .clk          (clk),
         .rst_n        (rst_n),
@@ -330,11 +354,30 @@ module spu_top #(
         .offset       (seu_offset),
         .tree_addr    (seu_tree_addr),
         .prob_base    (seu_prob_base),
+        // SEU v0.4 — speculative tree walker config
+        .tree_config  (seu_tree_config),
+        .node_base_addr(seu_node_base_addr),
+        .branch_mask  (seu_branch_mask),
+        .context_addr (seu_context_addr),
+        .embed_addr   (seu_embed_addr),
+        // Vector memory ports
         .vmem_c_addr  (seu_vmem_c_addr),
         .vmem_c_wdata (seu_vmem_c_wdata),
         .vmem_c_wen   (seu_vmem_c_wen),
         .vmem_d_addr  (seu_vmem_d_addr),
         .vmem_d_rdata (seu_vmem_d_rdata),
+        // Embedding search interface
+        .embed_search_start(embed_search_start),
+        .embed_query_addr(embed_query_addr),
+        .embed_vec_count(embed_vec_count),
+        .embed_search_done(embed_search_done),
+        .embed_result_idx(embed_result_idx),
+        .embed_result_score(embed_result_score),
+        // Branch results
+        .branch_valid     (seu_tree_result_flags),
+        .branch_best_idx  (seu_branch_best_idx),
+        .branch_best_score(seu_branch_best_score),
+        // Status
         .tree_status  (seu_tree_status),
         .tree_count   (seu_tree_count),
         .irq_seu      (seu_irq_line),
@@ -343,5 +386,32 @@ module spu_top #(
         .prob_readback  (seu_prob_readback),
         .entries_total  (seu_tree_entries_total)
     );
+
+    // ---- Embedding Search Interface (stub — ties to dot-product engine) ----
+    // TODO: Connect to sppu_dotprod when embedding search is implemented
+    // For now, tie off: immediately report done with idx=0, score=0
+    reg        embed_done_reg;
+    reg [31:0] embed_idx_reg;
+    reg [31:0] embed_score_reg;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            embed_done_reg  <= 1'b0;
+            embed_idx_reg   <= 32'd0;
+            embed_score_reg <= 32'd0;
+        end else begin
+            if (embed_search_start) begin
+                embed_done_reg  <= 1'b1;
+                embed_idx_reg   <= 32'd0;
+                embed_score_reg <= 32'h3F80_0000; // 1.0f
+            end else begin
+                embed_done_reg  <= 1'b0;
+            end
+        end
+    end
+
+    assign embed_search_done  = embed_done_reg;
+    assign embed_result_idx   = embed_idx_reg;
+    assign embed_result_score = embed_score_reg;
 
 endmodule

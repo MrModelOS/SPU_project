@@ -1,44 +1,46 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-// SPU Vector Memory — Coherent Shared Pool
+// SPPU Vector Memory — Coherent Shared Pool (XC7Z010 optimized)
 // Port A: write (DMA controller)
 // Port B: read  (dot-product engine)
 // Port C: write (SEU tree results)
 // Port D: read  (SEU probability config)
 //
-// Memory layout:
+// Memory layout (4K entries):
 //   [0 .. 767]               — target vector
 //   [768 .. 768+VEC*DIM-1]   — stored vectors
-//   [0x30000 .. 0x3FFFF]     — SEU tree / probability graph area
+//   [0x300 .. 0x3FF]         — SEU tree / probability graph area
 //
 // Port arbitration: A and C share write; B and D share read.
 // On collision the higher-priority port wins (DMA > SEU for writes,
 // dot-product > SEU for reads).
-module spu_vecmem (
+module sppu_vecmem (
     input  wire        clk,
 
     // Port A: write (DMA controller)
-    input  wire [17:0] a_addr,
+    input  wire [11:0] a_addr,
     input  wire [31:0] a_wdata,
     input  wire        a_wen,
 
     // Port B: read (dot-product engine)
-    input  wire [17:0] b_addr,
+    input  wire [11:0] b_addr,
     output reg  [31:0] b_rdata,
 
     // Port C: write (SEU tree)
-    input  wire [17:0] c_addr,
+    input  wire [11:0] c_addr,
     input  wire [31:0] c_wdata,
     input  wire        c_wen,
 
     // Port D: read (SEU probability config)
-    input  wire [17:0] d_addr,
+    input  wire [11:0] d_addr,
     output reg  [31:0] d_rdata
 );
 
-    // Total entries: 256K x 32-bit = 1MB BRAM
-    localparam DEPTH = 256 * 1024;
+    // XC7Z010 budget: 60 BRAM18Kb blocks
+    // 4K x 32-bit = 8 BRAM18K blocks (13% of BRAM budget)
+    // Supports ~500 vectors x 8-dim or ~125 vectors x 32-dim
+    localparam DEPTH = 4 * 1024;
 
     reg [31:0] mem [0:DEPTH-1];
 

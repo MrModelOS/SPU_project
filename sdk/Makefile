@@ -1,4 +1,4 @@
-# libspu — userspace SDK for /dev/spu
+# libsppu — userspace SDK for /dev/sppu
 
 CC       ?= gcc
 CFLAGS   ?= -Wall -Wextra -O2 -std=c11 -fPIC
@@ -6,22 +6,26 @@ CPPFLAGS += -Iinclude -I../emulator
 LDFLAGS  ?=
 LDLIBS   ?=
 
-LIBNAME  = libspu.so
-DEMO     = examples/spu_demo
+LIBNAME  = libsppu.so
+BACKEND  = libsppu_backend.so
+DEMO     = examples/sppu_demo
 
 .PHONY: all clean test
 
-all: $(LIBNAME) $(DEMO)
+all: $(LIBNAME) $(BACKEND) $(DEMO)
 
-$(LIBNAME): src/libspu.c include/spu.h ../emulator/spu_device.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) -shared -o $@ src/libspu.c $(LDFLAGS) $(LDLIBS)
+$(LIBNAME): src/libsppu.c include/sppu.h ../emulator/sppu_device.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -shared -o $@ src/libsppu.c $(LDFLAGS) $(LDLIBS)
 
-$(DEMO): examples/spu_demo.c $(LIBNAME) include/spu.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ examples/spu_demo.c \
-		-L. -lspu -Wl,-rpath,'$$ORIGIN/..' $(LDFLAGS) $(LDLIBS)
+$(BACKEND): src/sppu_backend.c include/sppu_backend.h include/sppu.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -shared -o $@ src/sppu_backend.c $(LDFLAGS) $(LDLIBS)
+
+$(DEMO): examples/sppu_demo.c $(LIBNAME) include/sppu.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ examples/sppu_demo.c \
+		-L. -lsppu -Wl,-rpath,'$$ORIGIN/..' $(LDFLAGS) $(LDLIBS)
 
 test: $(DEMO)
 	./$(DEMO)
 
 clean:
-	rm -f $(LIBNAME) $(DEMO)
+	rm -f $(LIBNAME) $(BACKEND) $(DEMO)

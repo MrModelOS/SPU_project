@@ -158,7 +158,7 @@ static void run_single_config(uint32_t vec_count, uint32_t dim,
 static void usage(const char *prog)
 {
 	fprintf(stderr,
-		"SPU Benchmark — dot-product search performance\n\n"
+		"SPPU Benchmark — dot-product search performance\n\n"
 		"Usage:\n"
 		"  %s [--vectors N] [--dim D] [--repeats R]\n"
 		"  %s --full\n\n"
@@ -199,7 +199,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	printf("=== SPU Dot-Product Search Benchmark ===\n");
+	printf("=== SPPU Dot-Product Search Benchmark ===\n");
 	printf("Compiler: %s\n",
 #ifdef __GNUC__
 		__VERSION__

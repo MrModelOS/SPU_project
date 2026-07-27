@@ -1,5 +1,5 @@
 /*
- * spu_searchd — Minimal HTTP semantic search server using /dev/spu
+ * sppu_searchd — Minimal HTTP semantic search server using /dev/sppu
  *
  * Endpoints:
  *   POST /search   {"vector":[0.1,0.2,...], "top_k":5}
@@ -8,9 +8,9 @@
  *   GET  /health
  *
  * Usage:
- *   ./spu_searchd [--port 8080] [--db vectors.bin]
+ *   ./sppu_searchd [--port 8080] [--db vectors.bin]
  *
- * Dependencies: libspu.so, POSIX sockets, fork()
+ * Dependencies: libsppu.so, POSIX sockets, fork()
  * No external libraries required.
  */
 
@@ -30,13 +30,13 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#include "spu.h"
-#include "spu_device.h"
+#include "sppu.h"
+#include "sppu_device.h"
 
 #define REQ_BUF   (1 << 20)
 #define MAX_DIM   768
 #define MAX_TOP_K 100
-#define BATCH_SZ  SPU_MAX_VECTORS
+#define BATCH_SZ  SPPU_MAX_VECTORS
 
 /* ---------- in-memory vector database --------------------------------- */
 
@@ -208,38 +208,38 @@ static int db_load_csv(const char *path)
 	return 0;
 }
 
-/* ---------- SPU search ------------------------------------------------ */
+/* ---------- SPPU search ------------------------------------------------ */
 
-static int spu_search_batch(const float *query, uint32_t dim,
+static int sppu_search_batch(const float *query, uint32_t dim,
 			    uint32_t offset, uint32_t batch_count,
 			    uint32_t *best_idx, float *best_score)
 {
-	spu_t *spu = spu_open(NULL);
-	if (!spu) return -1;
+	sppu_t *sppu = sppu_open(NULL);
+	if (!sppu) return -1;
 
 	int rc = -1;
-	if (spu_reset(spu) == 0 &&
-	    spu_configure(spu, batch_count, dim) == 0) {
+	if (sppu_reset(sppu) == 0 &&
+	    sppu_configure(sppu, batch_count, dim) == 0) {
 		rc = 0;
 		for (uint32_t i = 0; i < batch_count && rc == 0; i++)
-			rc = spu_load_vector(spu, i,
+			rc = sppu_load_vector(sppu, i,
 					     db.data + (size_t)(offset + i) * dim,
 					     dim);
-		if (rc == 0) rc = spu_set_target(spu, query, dim);
-		if (rc == 0) rc = spu_start(spu);
+		if (rc == 0) rc = sppu_set_target(sppu, query, dim);
+		if (rc == 0) rc = sppu_start(sppu);
 	}
 
 	if (rc == 0) {
 		uint32_t idx = 0, status = 0;
 		float score = 0;
-		rc = spu_wait_result(spu, &idx, &score, &status, 10000);
+		rc = sppu_wait_result(sppu, &idx, &score, &status, 10000);
 		if (rc == 0) {
 			*best_idx   = offset + idx;
 			*best_score = score;
 		}
 	}
 
-	spu_close(spu);
+	sppu_close(sppu);
 	return rc;
 }
 
@@ -341,7 +341,7 @@ static void do_search(const char *body, int client_fd)
 
 		uint32_t bidx = 0;
 		float bscore = 0;
-		if (spu_search_batch(vec, db.dim, batch_start, batch,
+		if (sppu_search_batch(vec, db.dim, batch_start, batch,
 				     &bidx, &bscore) < 0) {
 			batch_start += batch;
 			continue;
@@ -546,7 +546,7 @@ static void sigchld_handler(int sig)
 static void usage(const char *prog)
 {
 	fprintf(stderr,
-		"SPU Search Daemon — HTTP semantic search\n\n"
+		"SPPU Search Daemon — HTTP semantic search\n\n"
 		"Usage:\n"
 		"  %s [--port PORT] [--db file.bin]\n\n"
 		"Endpoints:\n"
@@ -622,7 +622,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	printf("SPU Search daemon listening on port %d\n", port);
+	printf("SPPU Search daemon listening on port %d\n", port);
 	printf("Endpoints:\n");
 	printf("  POST /search  {\"vector\":[...], \"top_k\":5}\n");
 	printf("  POST /load    {\"file\":\"path/to/db.bin\"}\n");

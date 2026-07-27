@@ -1,10 +1,10 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-// SPU DMA Controller
+// SPPU DMA Controller
 // Transfers vector data from host memory (via AXI) into vector memory (BRAM).
 // Supports: target load, vector load, scatter-gather.
-module spu_dma (
+module sppu_dma (
     input  wire        clk,
     input  wire        rst_n,
 
@@ -30,8 +30,8 @@ module spu_dma (
     input  wire        m_axi_rvalid,
     output reg         m_axi_rready,
 
-    // Vector memory write interface (to BRAM)
-    output reg  [15:0] vmem_waddr,
+    // Vector memory write interface (to BRAM, 4K entries)
+    output reg  [11:0] vmem_waddr,
     output reg  [31:0] vmem_wdata,
     output reg         vmem_wen
 );
@@ -67,7 +67,7 @@ module spu_dma (
             m_axi_arburst <= 2'b01; // INCR
             m_axi_arvalid <= 1'b0;
             m_axi_rready  <= 1'b0;
-            vmem_waddr    <= 16'd0;
+            vmem_waddr    <= 12'd0;
             vmem_wdata    <= 32'd0;
             vmem_wen      <= 1'b0;
             r_src         <= 32'd0;
@@ -129,7 +129,7 @@ module spu_dma (
 
                 ST_WRITE: begin
                     // Write buffered data to vector memory
-                    vmem_waddr <= r_dst[15:0];
+                    vmem_waddr <= r_dst[11:0];
                     vmem_wdata <= burst_buf[burst_idx[3:0]];
                     vmem_wen   <= 1'b1;
 

@@ -1,13 +1,13 @@
-# SPU Emulator — Makefile
+# SPPU Emulator — Makefile
 # C11, GCC, POSIX
 
 CC      := gcc
 CFLAGS  := -Wall -Wextra -O2 -std=c11
 LDFLAGS := -lm
 
-SRCS    := main.c spu_pci.c
+SRCS    := main.c sppu_pci.c
 OBJS    := $(SRCS:.c=.o)
-TARGET  := spu_emulator
+TARGET  := sppu_emulator
 
 .PHONY: all clean run
 

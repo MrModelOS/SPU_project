@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-SPU Python SDK Demo
+SPPU Python SDK Demo
 Demonstrates: vector search, SEU prediction tree, probability profiling.
 
 Usage:
-    1. Load kernel module:  sudo insmod kernel_module/spu_driver.ko emulation=1
-    2. Run:                 python3 sdk/python/examples/spu_demo.py
+    1. Load kernel module:  sudo insmod kernel_module/sppu_driver.ko emulation=1
+    2. Run:                 python3 sdk/python/examples/sppu_demo.py
 """
 
 import random
@@ -15,34 +15,34 @@ import os
 # Allow running from repo root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from spu import SPU, SPUError, SPU_SEU_TREE_ENTRIES
+from sppu import SPPU, SPPUError, SPPU_SEU_TREE_ENTRIES
 
 
 def frand():
     return random.uniform(-1.0, 1.0)
 
 
-def demo_vector_search(spu):
+def demo_vector_search(sppu):
     """Run a basic similarity search: 10 vectors, dim=8."""
-    print("=== SPU Vector Search ===")
+    print("=== SPPU Vector Search ===")
 
-    spu.reset()
-    spu.configure(vec_count=10, dimension=8)
+    sppu.reset()
+    sppu.configure(vec_count=10, dimension=8)
 
     # Generate 10 random vectors
     vectors = [[frand() for _ in range(8)] for _ in range(10)]
 
     # Load all vectors
     for i, vec in enumerate(vectors):
-        spu.load_vector(i, vec)
+        sppu.load_vector(i, vec)
 
     # Set target = copy of vector #7
     target = vectors[7][:]
-    spu.load_vector(7, target)
-    spu.set_target(target)
+    sppu.load_vector(7, target)
+    sppu.set_target(target)
 
     # Search
-    idx, score = spu.search(timeout_ms=5000)
+    idx, score = sppu.search(timeout_ms=5000)
     print(f"  Best match: vector #{idx}, score={score:.4f}")
 
     if idx == 7:
@@ -52,14 +52,14 @@ def demo_vector_search(spu):
     print()
 
 
-def demo_seu_tree(spu):
+def demo_seu_tree(sppu):
     """Generate a prediction tree with SEU."""
     print("=== SEU Prediction Tree ===")
 
     depth = 6
     offset = 0xF0F0
 
-    entries = spu.predict_tree(depth=depth, offset=offset, timeout_ms=5000)
+    entries = sppu.predict_tree(depth=depth, offset=offset, timeout_ms=5000)
     print(f"  Depth: {depth}, Offset: 0x{offset:04X}")
     print(f"  Generated {len(entries)} probability entries")
 
@@ -70,14 +70,14 @@ def demo_seu_tree(spu):
     print()
 
 
-def demo_probability_profiling(spu):
+def demo_probability_profiling(sppu):
     """Read back probability entries after tree generation."""
     print("=== SEU Probability Profiling ===")
 
     depth = 8
     offset = 0x1234
 
-    entries = spu.predict_tree(depth=depth, offset=offset, timeout_ms=5000)
+    entries = sppu.predict_tree(depth=depth, offset=offset, timeout_ms=5000)
     print(f"  Generated {len(entries)} entries (depth={depth})")
 
     # Compute statistics
@@ -93,26 +93,26 @@ def demo_probability_profiling(spu):
 
 
 def main():
-    print("SPU Python SDK Demo v0.3\n")
+    print("SPPU Python SDK Demo v0.3\n")
 
     try:
-        with SPU() as spu:
-            demo_vector_search(spu)
-            demo_seu_tree(spu)
-            demo_probability_profiling(spu)
+        with SPPU() as sppu:
+            demo_vector_search(sppu)
+            demo_seu_tree(sppu)
+            demo_probability_profiling(sppu)
             print("All demos completed successfully.")
-    except SPUError as e:
-        print(f"SPU Error: {e}", file=sys.stderr)
+    except SPPUError as e:
+        print(f"SPPU Error: {e}", file=sys.stderr)
         print(
             "Make sure the kernel module is loaded:\n"
-            "  sudo insmod kernel_module/spu_driver.ko emulation=1",
+            "  sudo insmod kernel_module/sppu_driver.ko emulation=1",
             file=sys.stderr,
         )
         sys.exit(1)
     except OSError as e:
         print(f"OS Error: {e}", file=sys.stderr)
         print(
-            "Make sure libspu.so is built:\n"
+            "Make sure libsppu.so is built:\n"
             "  cd sdk && make",
             file=sys.stderr,
         )
