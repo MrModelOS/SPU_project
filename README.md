@@ -125,10 +125,16 @@ SPPU_project/
 │  │  ├── sppu_artix7.xdc           # Pin constraints (generic Artix-7)
 │  │  └── sppu_zynq7010.xdc         # Pin constraints (Zynq-7010, AntMiner XC7Z010)
 │  ├── scripts/
-│  │  ├── vivado_synth.tcl          # Vivado synthesis flow
-│  │  └── vivado_program.tcl        # JTAG programming
+│  │  ├── vivado_synth.tcl          # Vivado synthesis flow (sppu_pynq_top as top)
+│  │  └── vivado_program.tcl        # JTAG programming via Vivado
 │  ├── Makefile                      # sim / synth / program / lint targets
-│  └── tb_sppu.vcd                   # Сигнатурные файлы симуляции
+│  └── tb_sppu.vcd                   # Simulation waveform output
+│
+├ scripts/                            # Автоматизация сборки и прошивки
+│  ├── build_fpga.sh                 # Полная сборка bitstream (Vivado)
+│  ├── flash_jtag.sh                 # Прошивка FPGA через JTAG
+│  ├── create_boot.sh                # Сборка boot.bin и образа SD-карты
+│  └── setup_petalinux.sh            # Создание/обновление PetaLinux проекта
 │
 └ qemu/                              # QEMU virtual PCI device
    ├── README.md
@@ -152,7 +158,7 @@ SPPU_project/
 | `sppu_dotprod.v` | Pipeline dot-product engine, 1 iteration per cycle |
 | `sppu_dma.v` | DMA controller: FIFO ↔ vector memory |
 | `sppu_vecmem.v` | 4-port shared BRAM (256K × 32-bit), DMA has write priority over SEU |
-| `sppu_pynq_top.v` | PYNQ/Zynq wrapper: instantiates PS-PL AXI interconnect, exposes LEDs |
+| `sppu_pynq_top.v` | PYNQ/Zynq wrapper (PS AXI bridge, LEDs, UART debug, irq) |
 | `seu_tree.v` | SEU tree generator: FSM + LFSR for probability scoring |
 
 **SPPU Registers (BAR0, offset 0x00–0x2C):**
@@ -372,44 +378,105 @@ python3 sdk/python/examples/sppu_demo.py
 
 ---
 
-## Прошивка FPGA (Zynq-7010)
+## Прошивка FPGA (Zynq-7010, AntMiner XC7Z010 v1.0)
 
 ### Требования
-- Xilinx Vivado (WebPACK бесплатен для Artix-7/Zynq-7000)
+- Xilinx Vivado (WebPACK бесплатен для Zynq-7000)
 - JTAG-адаптер (Digilent JTAG-HS3 или аналог)
-- Плата AntMiner XC7Z010 v1.0 (или другая с Zynq-7010)
+- Плата AntMiner XC7Z010 v1.0
+- Linux-система (для сборки и работы скриптов)
 
-### Синтез bitstream
+### Автоматическая сборка и прошивка
+
 ```bash
-cd fpga
-make synth
+# 1. Полная сборка bitstream
+scripts/build_fpga.sh
+
+# 2. Прошивка FPGA через JTAG
+scripts/flash_jtag.sh
+
+# 3. Сборка boot-образа для SD-карты
+scripts/create_boot.sh
 ```
 
-### Программирование через Vivado (JTAG)
-```bash
-vivado -mode batch -source scripts/vivado_program.tcl \
-  -tclargs "build/sppu_zynq7010.bit"
-```
+### Пошаговый workflow с нуля
 
-Или в интерактивном режиме: `Open Hardware Manager → Connect → Program Device`.
-
-### Программирование через openFPGALoader
 ```bash
+# === Шаг 1: Клонирование проекта ===
+git clone https://github.com/MrModelOS/SPPU_project.git
+cd SPPU_project
+
+# === Шаг 2: Сборка bitstream ===
+# Скрипт автоматически запускает Vivada synthesis → place & route → bitstream
+scripts/build_fpga.sh
+# Результат: fpga/build/sppu_zynq7010.bit
+#           fpga/build/sppu_zynq7010.xsa  (для PetaLinux/Vitis)
+
+# === Шаг 3: Прошивка FPGA через JTAG ===
+# Подключите JTAG-адаптер к плате и компьютеру
+scripts/flash_jtag.sh
+# Или вручную:
+vivado -mode batch -source fpga/scripts/vivado_program.tcl \
+  -tclargs "fpga/build/sppu_zynq7010.bit"
+
+# Альтернатива — openFPGALoader (без Vivado):
 sudo apt install openfpgaloader
-make program-ocd   # из каталога fpga/
+openFPGALoader -b digilent_a fpga/build/sppu_zynq7010.bit
+
+# === Шаг 4: Создание boot-образа для SD-карты ===
+scripts/create_boot.sh
+# Это создаст boot.bin (FSBL + bitstream) в fpga/build/boot/
+# Если доступен PetaLinux — автоматически соберёт ядро + FSBL + DTB
+
+# === Шаг 5: Запись SD-карты ===
+# Определите устройство SD-карты:
+lsblk
+# Например, /dev/sdX
+
+# Записать boot.bin (первый сектор):
+sudo dd if=fpga/build/boot/boot.bin of=/dev/sdX bs=512 seek=0 conv=notrunc
+
+# Скопировать kernel (Image), device tree (.dtb) и rootfs
+sudo mount /dev/sdX1 /mnt
+sudo cp images/linux/Image /mnt/boot/
+sudo cp images/linux/devicetree.dtb /mnt/boot/
+sudo tar -xzf rootfs.tar.gz -C /mnt/
+sudo umount /mnt
+
+# === Шаг 6: Загрузка Linux-драйвера (на плате) ===
+# После включения платы с SD-картой:
+insmod kernel_module/sppu_driver.ko emulation=0
+ls -la /dev/sppu
+
+# === Или эмуляция без FPGA (для тестирования стека) ===
+insmod kernel_module/sppu_driver.ko emulation=1
+./tools/sppu_search --generate 5000 128 --db vectors.csv
 ```
 
-### Загрузка при старте (boot.bin)
-Для автоматической загрузки FPGA при включении платы:
-1. В Vitis импортируйте `.xsa` из `build/`
-2. Создайте FSBL, настройте boot image (`boot.bif`)
-3. Соберите `boot.bin` через `bootgen`
-4. Поместите `boot.bin` на SD-карту (позиция 0)
+### Вручную без PetaLinux (минимальный boot.bin)
 
-### Загрузка Linux-драйвера (после прошивки)
+Если PetaLinux/Vitis не установлены:
+
 ```bash
-sudo insmod kernel_module/sppu_driver.ko emulation=0
-ls -la /dev/sppu
+# 1. Соберите FSBL с XSA через Vivado SDK или Vitis:
+#    - Импортируйте fpga/build/sppu_zynq7010.xsa
+#    - Создайте приложение "Zynq FSBL"
+#    - Скомпилируйте → fsbl.elf
+
+# 2. Создайте boot.bif:
+cat > boot.bif << 'EOF'
+the_ROM_image:
+{
+  [bootloader] fsbl.elf
+  sppu_zynq7010.bit
+}
+EOF
+
+# 3. Соберите boot.bin:
+bootgen -image boot.bif -o boot.bin -w
+
+# 4. Запишите на SD-карту:
+sudo dd if=boot.bin of=/dev/sdX bs=512 seek=0 conv=notrunc
 ```
 
 ---

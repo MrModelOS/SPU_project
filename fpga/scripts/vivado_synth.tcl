@@ -20,11 +20,11 @@ foreach f $src_files {
 # Add constraints
 add_files -fileset constrs_1 -norecurse $xdc_file
 
-# Set top module
-set_property top sppu_top [current_fileset]
+# Set top module (PYNQ/Zynq wrapper — exposed PS-facing AXI-Lite + AXI4 + PL I/O)
+set_property top sppu_pynq_top [current_fileset]
 
 # Synthesis for Zynq-7010
-synth_design -top sppu_top -part xc7z010clg400-1 -flatten_hierarchy rebuilt
+synth_design -top sppu_pynq_top -part xc7z010clg400-1 -flatten_hierarchy rebuilt
 
 # Report utilization
 report_utilization -file ${build_dir}/utilization_report.txt

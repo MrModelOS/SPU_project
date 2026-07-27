@@ -1,72 +1,53 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-// SPPU PYNQ/Zynq Top-Level Wrapper
-// Connects sppu_top to Zynq PS via AXI GP port.
-// For PYNQ-Z2 / PYNQ-Z1 / Zybo-Z7 boards with XC7Z020.
-module sppu_pynq_top #(
+module sppu_pynq #(
     parameter C_AXI_DATA_WIDTH = 32,
     parameter C_AXI_ADDR_WIDTH = 12
 )(
-    // System
-    input  wire       sys_clk,     // 125 MHz from PS or oscillator
-    input  wire       sys_rst_n,   // Active-low reset (from PS or button)
+    input  wire       sys_clk,
+    input  wire       sys_rst_n,
 
-    // LEDs
     output wire [4:0] led,
 
-    // UART (debug / register access from host)
     output wire       uart_tx,
     input  wire       uart_rx,
 
-    // Interrupt to PS
-    output wire       irq
-);
+    output wire       irq,
 
-    // ---- Clock gen (PS CLK → fabric) ----
-    // On PYNQ boards, sys_clk comes from FCLK_CLK0 (100 MHz)
-    // or an external oscillator. For standalone use, instantiate
-    // a clock wizard if needed. Here we assume sys_clk is
-    // already the correct fabric clock.
+    // Zynq PS AXI-Lite Master (GP0) — connected via PS-to-PL
+    input  wire [C_AXI_ADDR_WIDTH-1:0]    s_axi_awaddr,
+    input  wire                            s_axi_awvalid,
+    output wire                            s_axi_awready,
+    input  wire [C_AXI_DATA_WIDTH-1:0]    s_axi_wdata,
+    input  wire                            s_axi_wvalid,
+    output wire                            s_axi_wready,
+    output wire [1:0]                     s_axi_bresp,
+    output wire                            s_axi_bvalid,
+    input  wire                            s_axi_bready,
+    input  wire [C_AXI_ADDR_WIDTH-1:0]    s_axi_araddr,
+    input  wire                            s_axi_arvalid,
+    output wire                            s_axi_arready,
+    output wire [C_AXI_DATA_WIDTH-1:0]    s_axi_rdata,
+    output wire [1:0]                     s_axi_rresp,
+    output wire                            s_axi_rvalid,
+    input  wire                            s_axi_rready,
+
+    // Zynq PS AXI4 Master (HP0) — for DMA reads from DDR
+    output wire [31:0]  m_axi_araddr,
+    output wire [7:0]   m_axi_arlen,
+    output wire [2:0]   m_axi_arsize,
+    output wire [1:0]   m_axi_arburst,
+    output wire         m_axi_arvalid,
+    input  wire         m_axi_arready,
+    input  wire [31:0]  m_axi_rdata,
+    input  wire         m_axi_rvalid,
+    output wire         m_axi_rready
+);
 
     wire clk = sys_clk;
     wire rst_n = sys_rst_n;
 
-    // ---- AXI-Lite master from PS (register access) ----
-    // In a real Zynq design, these come from the PS AXI GP port
-    // via an AXI Interconnect. For standalone testing, we expose
-    // them as top-level ports that can be driven by a UART-to-AXI
-    // bridge or directly from PS fabric.
-
-    wire [C_AXI_ADDR_WIDTH-1:0] s_axi_awaddr;
-    wire                        s_axi_awvalid;
-    wire                        s_axi_awready;
-    wire [C_AXI_DATA_WIDTH-1:0] s_axi_wdata;
-    wire                        s_axi_wvalid;
-    wire                        s_axi_wready;
-    wire [1:0]                  s_axi_bresp;
-    wire                        s_axi_bvalid;
-    wire                        s_axi_bready;
-    wire [C_AXI_ADDR_WIDTH-1:0] s_axi_araddr;
-    wire                        s_axi_arvalid;
-    wire                        s_axi_arready;
-    wire [C_AXI_DATA_WIDTH-1:0] s_axi_rdata;
-    wire [1:0]                  s_axi_rresp;
-    wire                        s_axi_rvalid;
-    wire                        s_axi_rready;
-
-    // AXI4 master (DMA — for Zynq, this goes to HP port)
-    wire [31:0] m_axi_araddr;
-    wire [7:0]  m_axi_arlen;
-    wire [2:0]  m_axi_arsize;
-    wire [1:0]  m_axi_arburst;
-    wire        m_axi_arvalid;
-    wire        m_axi_arready;
-    wire [31:0] m_axi_rdata;
-    wire        m_axi_rvalid;
-    wire        m_axi_rready;
-
-    // ---- SPPU Core ----
     sppu_top #(
         .C_AXI_DATA_WIDTH(C_AXI_DATA_WIDTH),
         .C_AXI_ADDR_WIDTH(C_AXI_ADDR_WIDTH)
@@ -74,7 +55,6 @@ module sppu_pynq_top #(
         .clk            (clk),
         .rst_n          (rst_n),
         .irq            (irq),
-        // AXI-Lite slave
         .s_axi_awaddr   (s_axi_awaddr),
         .s_axi_awvalid  (s_axi_awvalid),
         .s_axi_awready  (s_axi_awready),
@@ -91,7 +71,6 @@ module sppu_pynq_top #(
         .s_axi_rresp    (s_axi_rresp),
         .s_axi_rvalid   (s_axi_rvalid),
         .s_axi_rready   (s_axi_rready),
-        // AXI4 master (DMA)
         .m_axi_araddr   (m_axi_araddr),
         .m_axi_arlen    (m_axi_arlen),
         .m_axi_arsize   (m_axi_arsize),
@@ -103,13 +82,6 @@ module sppu_pynq_top #(
         .m_axi_rready   (m_axi_rready)
     );
 
-    // ---- LED status ----
-    // LED[0] = heartbeat (blinks)
-    // LED[1] = SPPU busy
-    // LED[2] = SPPU done
-    // LED[3] = SEU busy
-    // LED[4] = IRQ active
-
     reg [31:0] heartbeat_cnt;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
@@ -118,26 +90,12 @@ module sppu_pynq_top #(
             heartbeat_cnt <= heartbeat_cnt + 32'd1;
     end
 
-    assign led[0] = heartbeat_cnt[24];  // ~1 Hz blink at 100 MHz
-    assign led[1] = (s_axi_rdata[1:0] == 2'd1); // BUSY
-    assign led[2] = (s_axi_rdata[1:0] == 2'd2); // DONE
-    assign led[3] = irq;                          // IRQ
-    assign led[4] = sys_rst_n;                    // reset status
+    assign led[0] = heartbeat_cnt[24];
+    assign led[1] = irq;
+    assign led[2] = 1'b0;
+    assign led[3] = 1'b0;
+    assign led[4] = 1'b0;
 
-    // ---- UART-to-AXI-Lite bridge (stub) ----
-    // In production, replace with uart_axi_bridge module
-    // that receives register read/write commands over UART
-    // and converts them to AXI-Lite transactions.
-    // For now, expose AXI signals for direct PS connection.
-
-    // Tie off AXI-Lite master when not driven by PS
-    assign s_axi_awvalid = 1'b0;
-    assign s_axi_wvalid  = 1'b0;
-    assign s_axi_bready  = 1'b1;
-    assign s_axi_arvalid = 1'b0;
-    assign s_axi_rready  = 1'b1;
-
-    // Tie off DMA master (active only when PS drives it)
-    assign m_axi_arready = 1'b0;
+    assign uart_tx = 1'b1;
 
 endmodule
