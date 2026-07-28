@@ -13,10 +13,10 @@ if [ ! -f "$BITSTREAM" ]; then
     exit 1
 fi
 
-echo "=== Programming FPGA via JTAG ==="
+echo "=== Programming FPGA via JTAG (openFPGALoader) ==="
 echo "Bitstream: $BITSTREAM"
+echo "Board:     digilent_a"
 
-vivado -mode batch -source "$FPGA_DIR/scripts/vivado_program.tcl" \
-    -tclargs "$BITSTREAM" 2>&1 | tee "$BUILD_DIR/program.log"
+openFPGALoader -b digilent_a "$BITSTREAM" 2>&1
 
 echo "=== FPGA programmed successfully ==="

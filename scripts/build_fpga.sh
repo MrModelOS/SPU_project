@@ -5,20 +5,40 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 FPGA_DIR="$PROJECT_DIR/fpga"
 BUILD_DIR="$FPGA_DIR/build"
-RTL_DIR="$FPGA_DIR/rtl"
-XDC_FILE="$FPGA_DIR/constraints/sppu_zynq7010.xdc"
+CONST_DIR="$FPGA_DIR/constraints"
+XDC_FILE="$CONST_DIR/sppu_zynq7010.xdc"
 
-echo "=== SPPU FPGA Build for AntMiner XC7Z010 v1.0 ==="
+echo "=== SPPU FPGA Build (Yosys + nextpnr-xilinx + openFPGALoader) ==="
 echo "Project: $PROJECT_DIR"
 echo "Build:   $BUILD_DIR"
+echo "Board:   AntMiner XC7Z010 v1.0 (xc7z010clg400-1)"
+echo ""
 
 mkdir -p "$BUILD_DIR"
 
-RTL_SRC="$RTL_DIR/sppu_regs.v $RTL_DIR/sppu_pynq_top.v $RTL_DIR/sppu_top.v $RTL_DIR/sppu_dma.v $RTL_DIR/sppu_dotprod.v $RTL_DIR/sppu_vecmem.v $RTL_DIR/seu_tree.v"
+echo "=== Step 1: Yosys Synthesis ==="
+cd "$FPGA_DIR"
+make synth
 
-vivado -mode batch -source "$FPGA_DIR/scripts/vivado_synth.tcl" \
-    -tclargs "$RTL_SRC" "$XDC_FILE" "$BUILD_DIR" 2>&1 | tee "$BUILD_DIR/build.log"
+echo ""
+echo "=== Step 2: nextpnr Place & Route ==="
+make fasm
 
+echo ""
+echo "=== Step 3: FASM → BIT ==="
+if command -v xc7frames2bit &>/dev/null; then
+    make bit
+else
+    echo "WARNING: xc7frames2bit not found in PATH."
+    echo "Build prjxray-tools to get it, or install 'fasm2bit' package."
+    echo "FASM file is at: $BUILD_DIR/sppu_pynq_top.fasm"
+    echo "You can convert it manually:"
+    echo "  xc7frames2bit --part_file fpga/arch/xc7z010clg400-1/part.yaml \\"
+    echo "    --part_name xc7z010clg400-1 --frm_file $BUILD_DIR/sppu_pynq_top.fasm \\"
+    echo "    --output_file $BUILD_DIR/sppu_zynq7010.bit"
+    exit 1
+fi
+
+echo ""
 echo "=== Build complete ==="
 echo "Bitstream: $BUILD_DIR/sppu_zynq7010.bit"
-echo "XSA:       $BUILD_DIR/sppu_zynq7010.xsa"

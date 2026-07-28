@@ -111,6 +111,13 @@ SPPU_project/
 │  └── sppu_client.py               # Python-клиент
 │
 ├ fpga/                              # FPGA реализация (Zynq-7010 / Artix-7)
+│  ├── arch/                            # Архитектурная база для nextpnr-xilinx
+│  │  └── xc7z010clg400-1/             # Описание кристалла Zynq-7010
+│  │     ├── part.yaml                  # Определение тайлов, сайтов, пинов
+│  │     ├── part.json                  # JSON-версия описания
+│  │     ├── package_pins.csv           # Маппинг пинов → корпуса
+│  │     └── required_features.fasm     # Минимальные FASM-функции чипа
+│  │  └── README.md                     # Подробности о chipdb
 │  ├── rtl/
 │  │  ├── sppu_top.v                # Top-level модуль (UART ↔ AXI-Lite bridge)
 │  │  ├── sppu_pynq_top.v           # PYNQ/Zynq wrapper (AXI-Lite bridge, LED status)
@@ -125,14 +132,16 @@ SPPU_project/
 │  │  ├── sppu_artix7.xdc           # Pin constraints (generic Artix-7)
 │  │  └── sppu_zynq7010.xdc         # Pin constraints (Zynq-7010, AntMiner XC7Z010)
 │  ├── scripts/
-│  │  ├── vivado_synth.tcl          # Vivado synthesis flow (sppu_pynq_top as top)
-│  │  └── vivado_program.tcl        # JTAG programming via Vivado
-│  ├── Makefile                      # sim / synth / program / lint targets
+│  │  ├── yosys_synth.ys            # Yosys synthesis script
+│  │  ├── nextpnr_impl.sh           # nextpnr place & route → FASM
+│  │  ├── fasm2bit.sh               # FASM → binary .bit (xc7frames2bit)
+│  │  └── program_fpga.sh           # Программирование FPGA через JTAG (openFPGALoader)
+│  ├── Makefile                      # sim / synth / fasm / bit / program / lint targets
 │  └── tb_sppu.vcd                   # Simulation waveform output
 │
 ├ scripts/                            # Автоматизация сборки и прошивки
-│  ├── build_fpga.sh                 # Полная сборка bitstream (Vivado)
-│  ├── flash_jtag.sh                 # Прошивка FPGA через JTAG
+│  ├── build_fpga.sh                 # Полная сборка bitstream (Yosys + nextpnr-xilinx)
+│  ├── flash_jtag.sh                 # Прошивка FPGA через JTAG (openFPGALoader)
 │  ├── create_boot.sh                # Сборка boot.bin и образа SD-карты
 │  └── setup_petalinux.sh            # Создание/обновление PetaLinux проекта
 │
@@ -381,15 +390,58 @@ python3 sdk/python/examples/sppu_demo.py
 ## Прошивка FPGA (Zynq-7010, AntMiner XC7Z010 v1.0)
 
 ### Требования
-- Xilinx Vivado (WebPACK бесплатен для Zynq-7000)
+- Yosys (https://github.com/YosysHQ/yosys)
+- nextpnr-xilinx (https://github.com/YosysHQ/nextpnr, с поддержкой Xilinx 7-series)
+- prjxray-tools (`xc7frames2bit`) — для конвертации FASM → binary bitstream
+  (https://github.com/xray-prj/prjxray-tools)
+- openFPGALoader (`apt install openfpgaloader` или собрать из исходников)
 - JTAG-адаптер (Digilent JTAG-HS3 или аналог)
 - Плата AntMiner XC7Z010 v1.0
 - Linux-система (для сборки и работы скриптов)
 
+### Генерация архитектурной базы (chipdb)
+
+nextpnr-xilinx требует бинарную архитектурную базу данных
+`chipdb.bin` для каждой целевой модели кристалла.
+
+Для XC7Z010 (`xc7z010clg400-1`) файл **уже готов** в репозитории:
+`fpga/arch/xc7z010clg400-1/chipdb.bin` (57 MB).
+
+Если нужно пересобрать (после обновления prjxray-db или смены nextpnr-версии):
+
+```bash
+# 1. Клонируйте Project X-Ray и nextpnr-xilinx источник
+git clone https://github.com/Xilinx/prjxray.git
+git clone https://github.com/YosysHQ/nextpnr-xilinx.git
+cd nextpnr-xilinx
+git submodule update --init --recursive
+
+# 2. Соберите bbaexport.py и bba-инструменты
+mkdir build && cd build
+cmake .. && make -j$(nproc)
+cp bba/bba /usr/local/bin/
+
+# 3. Экспортируйте BBA-описание устройства
+python3 ../xilinx/python/bbaexport.py \
+  --xray ../prjxray-db/zynq7 \
+  --metadata ../nextpnr-xilinx-meta/zynq7 \
+  --device xc7z010clg400-1 \
+  --constids ../xilinx/constids.inc \
+  --bba fpga/arch/xc7z010clg400-1/xc7z010clg400-1.bba
+
+# 4. Соберите бинарную базу
+bba --le fpga/arch/xc7z010clg400-1/xc7z010clg400-1.bba \
+    fpga/arch/xc7z010clg400-1/chipdb.bin
+```
+
+Файлы `part.yaml`, `part.json`, `package_pins.csv`, `required_features.fasm`
+(описание кристалла из prjxray-db) используются bbaexport.py
+на этапе генерации. Подробнее — `fpga/arch/README.md`.
+
 ### Автоматическая сборка и прошивка
 
 ```bash
-# 1. Полная сборка bitstream
+# 1. Полная сборка bitstream (Yosys → nextpnr → fasm2bit → .bit)
 scripts/build_fpga.sh
 
 # 2. Прошивка FPGA через JTAG
@@ -407,28 +459,23 @@ git clone https://github.com/MrModelOS/SPPU_project.git
 cd SPPU_project
 
 # === Шаг 2: Сборка bitstream ===
-# Скрипт автоматически запускает Vivada synthesis → place & route → bitstream
+# Используется открытый toolchain: Yosys → nextpnr-xilinx → FASM → BIT
 scripts/build_fpga.sh
 # Результат: fpga/build/sppu_zynq7010.bit
-#           fpga/build/sppu_zynq7010.xsa  (для PetaLinux/Vitis)
+#           fpga/build/sppu_pynq_top.fasm  (промежуточный текст bitstream)
 
 # === Шаг 3: Прошивка FPGA через JTAG ===
 # Подключите JTAG-адаптер к плате и компьютеру
 scripts/flash_jtag.sh
 # Или вручную:
-vivado -mode batch -source fpga/scripts/vivado_program.tcl \
-  -tclargs "fpga/build/sppu_zynq7010.bit"
-
-# Альтернатива — openFPGALoader (без Vivado):
-sudo apt install openfpgaloader
 openFPGALoader -b digilent_a fpga/build/sppu_zynq7010.bit
 
-# === Шаг 4: Создание boot-образа для SD-карты ===
+# === Шаг 4: Сборка boot-образа для SD-карты ===
 scripts/create_boot.sh
-# Это создаст boot.bin (FSBL + bitstream) в fpga/build/boot/
-# Если доступен PetaLinux — автоматически соберёт ядро + FSBL + DTB
+# Это создаст boot.bin (bitstream) в fpga/build/boot/
+# Для полной загрузки Linux требуется FSBL (Zynq Boot ROM загружает его)
 
-# === Шаг 5: Запись SD-карты ===
+# === Шаг 5: Запись SD-карты и загрузка Linux ===
 # Определите устройство SD-карты:
 lsblk
 # Например, /dev/sdX
@@ -449,6 +496,7 @@ insmod kernel_module/sppu_driver.ko emulation=0
 ls -la /dev/sppu
 
 # === Или эмуляция без FPGA (для тестирования стека) ===
+```
 insmod kernel_module/sppu_driver.ko emulation=1
 ./tools/sppu_search --generate 5000 128 --db vectors.csv
 ```

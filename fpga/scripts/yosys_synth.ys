@@ -1,0 +1,3 @@
+synth_xilinx -top sppu_pynq_top -family xc7 -edgename sppu
+
+write_json -compact build/sppu_pynq_top.json
