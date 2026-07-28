@@ -67,7 +67,8 @@ wave: sim
 
 $(JSON): $(YOSYS_SRC) $(XDC) $(SCRIPTS_DIR)/yosys_synth.ys
 	@echo "=== Yosys synthesis ==="
-	yosys -c $(SCRIPTS_DIR)/yosys_synth.ys \
+	mkdir -p $(BUILD_DIR)
+	yosys -p 'read_verilog rtl/sppu_regs.v; read_verilog rtl/sppu_dotprod.v; read_verilog rtl/sppu_dma.v; read_verilog rtl/sppu_vecmem.v; read_verilog rtl/seu_tree.v; read_verilog rtl/sppu_top.v; read_verilog rtl/sppu_pynq_top.v; synth_xilinx -top sppu_pynq -family xc7; write_json build/sppu_pynq_top.json' \
 		2>&1 | tee $(BUILD_DIR)/yosys.log
 
 synth: $(JSON)
@@ -82,8 +83,7 @@ $(FASM): $(JSON) $(XDC) $(CHIPDB_DIR)/part.yaml $(SCRIPTS_DIR)/nextpnr_impl.sh
 		$(XDC) \
 		$(CHIPDB_DIR) \
 		$(FASM) \
-		$(JSON) \
-		$(PART_NAME)
+		$(JSON)
 	@echo "=== FASM ready: $(FASM) ==="
 
 fasm: $(FASM)

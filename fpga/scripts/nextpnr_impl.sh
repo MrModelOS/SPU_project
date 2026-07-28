@@ -6,16 +6,14 @@ XDC_FILE="$2"
 CHIPDB_DIR="$3"
 FASM_OUT="$4"
 JSON_IN="$5"
-PART="$6"
 
-if [ -z "$BUILD_DIR" ] || [ -z "$XDC_FILE" ] || [ -z "$CHIPDB_DIR" ] || [ -z "$FASM_OUT" ] || [ -z "$JSON_IN" ] || [ -z "$PART" ]; then
-    echo "Usage: nextpnr_impl.sh <build_dir> <xdc_file> <chipdb_dir> <fasm_out> <json_in> <part>"
+if [ -z "$BUILD_DIR" ] || [ -z "$XDC_FILE" ] || [ -z "$CHIPDB_DIR" ] || [ -z "$FASM_OUT" ] || [ -z "$JSON_IN" ]; then
+    echo "Usage: nextpnr_impl.sh <build_dir> <xdc_file> <chipdb_dir> <fasm_out> <json_in>"
     echo "  build_dir   - output directory"
     echo "  xdc_file    - XDC constraints file"
     echo "  chipdb_dir  - directory containing chipdb.bin for target device"
     echo "  fasm_out    - output fasm file path"
     echo "  json_in     - input JSON netlist from Yosys"
-    echo "  part        - FPGA part name (e.g. xc7z010clg400-1)"
     exit 1
 fi
 
@@ -24,8 +22,6 @@ nextpnr-xilinx \
     --xdc "$XDC_FILE" \
     --json "$JSON_IN" \
     --fasm "$FASM_OUT" \
-    --part "$PART" \
-    --freq 100 \
     --timing-allow-fail \
     --placer heap \
     --router router2 \

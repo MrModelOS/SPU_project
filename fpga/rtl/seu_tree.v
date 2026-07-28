@@ -96,20 +96,20 @@ module seu_tree (
     assign cfg_context_len      = r_tree_config[7:4] ? r_tree_config[7:4] : 4'd1;
     assign cfg_auto_validate    = r_tree_config[8];
 
-    // Clamp depth to [5..8]
+    // Clamp depth to [2..4] (reduced from [5..8] for timing closure)
     wire [2:0] clamped_depth;
-    assign clamped_depth = (depth < 32'd5) ? 3'd4 :
-                           (depth > 32'd8) ? 3'd7 :
+    assign clamped_depth = (depth < 32'd2) ? 3'd1 :
+                           (depth > 32'd4) ? 3'd3 :
                            depth[2:0] - 3'd1;
 
     // ---- Path History BRAM ----
-    // 16 variants × 8 levels × 32-bit token
-    reg [31:0] path_tokens [0:127];  // [variant*8 + level]
-    reg [127:0] path_valid_mask;     // per-entry validity (128 bits)
+    // 4 variants × 4 levels × 32-bit token (reduced from 16×8 for timing closure)
+    (* ram_style = "block" *) reg [31:0] path_tokens [0:15];
+    reg [15:0] path_valid_mask;     // per-entry validity (16 bits)
 
     // ---- Node Weights BRAM ----
-    // 16 variants × 8 levels × 32-bit weight
-    reg [31:0] node_weights [0:127];
+    // 4 variants × 4 levels × 32-bit weight (reduced from 16×8 for timing closure)
+    (* ram_style = "block" *) reg [31:0] node_weights [0:15];
 
     // ---- Context Tokens ----
     reg [31:0] context_buf [0:7];   // up to 8 context tokens
@@ -117,8 +117,8 @@ module seu_tree (
     // ---- Computation State ----
     reg [3:0]  cur_variant;
     reg [2:0]  cur_level;
-    reg [6:0]  cur_idx;
-    reg [6:0]  total_entries;
+    reg [4:0]  cur_idx;
+    reg [4:0]  total_entries;
     reg [3:0]  active_branches;     // count of active branches
     reg [31:0] weight_acc;          // weight accumulator
     reg [31:0] branch_seed;
@@ -126,11 +126,11 @@ module seu_tree (
     // LFSR for pseudo-random branch scoring (seeded by context)
     reg [31:0] lfsr_state;
 
-    // Combined score buffer
-    reg [31:0] score_buf [0:127];
+    // Combined score buffer (reduced from 128 to 16 for timing closure)
+    reg [31:0] score_buf [0:15];
 
-    wire [6:0] entry_count;
-    assign entry_count = {2'd0, clamped_depth + 3'd1} * {2'd0, cfg_max_branches};
+    wire [4:0] entry_count;
+    assign entry_count = ({1'd0, clamped_depth} + 5'd1) * {1'd0, cfg_max_branches};
 
     // ---- Active branch counter from mask ----
     function [3:0] count_ones(input [15:0] mask);
@@ -160,8 +160,8 @@ module seu_tree (
             r_embed_addr     <= 32'd0;
             cur_variant      <= 4'd0;
             cur_level        <= 3'd0;
-            cur_idx          <= 7'd0;
-            total_entries    <= 7'd0;
+            cur_idx          <= 5'd0;
+            total_entries    <= 5'd0;
             active_branches  <= 4'd0;
             weight_acc       <= 32'd0;
             branch_seed      <= 32'd1;
@@ -181,7 +181,7 @@ module seu_tree (
             embed_search_start <= 1'b0;
             embed_query_addr <= 32'd0;
             embed_vec_count  <= 32'd0;
-            path_valid_mask  <= 128'd0;
+                path_valid_mask  <= 16'd0;
         end else begin
             done    <= 1'b0;
             irq_seu <= 32'd0;
@@ -196,7 +196,7 @@ module seu_tree (
                 branch_valid     <= 16'd0;
                 branch_best_idx  <= 32'd0;
                 branch_best_score<= 32'd0;
-                path_valid_mask  <= 128'd0;
+            path_valid_mask  <= 16'd0;
             end else begin
 
             case (state)
@@ -218,7 +218,7 @@ module seu_tree (
                         r_embed_addr     <= embed_addr;
                         cur_variant      <= 4'd0;
                         cur_level        <= 3'd0;
-                        cur_idx          <= 7'd0;
+                        cur_idx          <= 5'd0;
                         active_branches  <= count_ones(branch_mask);
                         branch_seed      <= 32'h0000_0001;
                         lfsr_state       <= branch_mask[15:0] != 16'd0
@@ -242,7 +242,7 @@ module seu_tree (
                     if (cur_level + 3'd1 >= cfg_context_len[2:0]) begin
                         // Done loading context — move to weights
                         cur_level <= 3'd0;
-                        cur_idx   <= 7'd0;
+                        cur_idx   <= 5'd0;
                         state     <= ST_LOAD_WEIGHTS;
                     end else begin
                         cur_level <= cur_level + 3'd1;
@@ -263,8 +263,8 @@ module seu_tree (
                     state <= ST_COMPUTE;
 
                     // Store weight into buffer (1-cycle latency)
-                    if (cur_idx != 7'd0)
-                        node_weights[cur_idx - 7'd1] <= vmem_d_rdata;
+                    if (cur_idx != 5'd0)
+                        node_weights[cur_idx - 5'd1] <= vmem_d_rdata;
                 end
 
                 // ================================================================
@@ -298,8 +298,8 @@ module seu_tree (
                                    lfsr_state[31] ^ lfsr_state[5] ^ lfsr_state[1]};
 
                     // Advance to next entry
-                    if (cur_idx + 7'd1 >= total_entries) begin
-                        cur_idx   <= 7'd0;
+                    if (cur_idx + 5'd1 >= total_entries) begin
+                        cur_idx   <= 5'd0;
                         cur_level <= 3'd0;
                         cur_variant <= 4'd0;
 
@@ -309,7 +309,7 @@ module seu_tree (
                         else
                             state <= ST_WRITE_RESULTS;
                     end else begin
-                        cur_idx <= cur_idx + 7'd1;
+                        cur_idx <= cur_idx + 5'd1;
 
                         // Advance level/variant
                         if (cur_level + 3'd1 > clamped_depth) begin
@@ -377,9 +377,9 @@ module seu_tree (
                     vmem_c_wdata <= path_tokens[cur_idx];
                     vmem_c_wen   <= 1'b1;
 
-                    cur_idx <= cur_idx + 7'd1;
+                    cur_idx <= cur_idx + 5'd1;
 
-                    if (cur_idx + 7'd1 >= total_entries) begin
+                    if (cur_idx + 5'd1 >= total_entries) begin
                         // Also write validity mask and best result
                         state <= ST_VALIDATE;
                     end
@@ -416,8 +416,8 @@ module seu_tree (
             end // else (not seu_reset)
 
             // ---- Probability readback — always available ----
-            if (prob_read_idx[31:7] == 25'd0)
-                prob_readback <= score_buf[prob_read_idx[6:0]];
+            if (prob_read_idx[31:4] == 28'd0)
+                prob_readback <= score_buf[prob_read_idx[3:0]];
             else
                 prob_readback <= 32'd0;
         end

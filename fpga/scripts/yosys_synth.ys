@@ -1,3 +1,9 @@
-synth_xilinx -top sppu_pynq_top -family xc7 -edgename sppu
-
-write_json -compact build/sppu_pynq_top.json
+read_verilog rtl/sppu_regs.v
+read_verilog rtl/sppu_dotprod.v
+read_verilog rtl/sppu_dma.v
+read_verilog rtl/sppu_vecmem.v
+read_verilog rtl/seu_tree.v
+read_verilog rtl/sppu_top.v
+read_verilog rtl/sppu_pynq_top.v
+synth_xilinx -top sppu_pynq -family xc7 -noclkbuf
+write_json build/sppu_pynq_top.json

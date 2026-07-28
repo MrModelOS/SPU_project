@@ -6,7 +6,7 @@
 
 SPPU — концептуальный аппаратный ускоритель для similarity search на float-векторах. Проект включает полный стек: от RTL-модели чипа до HTTP API сервера, готового к интеграции.
 
-**v0.3:** Добавлен SEU (Speculative Execution Unit) — предиктивное дерево решений, генерирующее вероятности ветвления параллельно с dot-product движком.
+**v0.4:** Open-source FPGA toolchain (Yosys + nextpnr-xilinx + prjxray). SEU compact mode (4×4). SA placer null-ptr fix.
 
 ---
 
@@ -168,7 +168,7 @@ SPPU_project/
 | `sppu_dma.v` | DMA controller: FIFO ↔ vector memory |
 | `sppu_vecmem.v` | 4-port shared BRAM (256K × 32-bit), DMA has write priority over SEU |
 | `sppu_pynq_top.v` | PYNQ/Zynq wrapper (PS AXI bridge, LEDs, UART debug, irq) |
-| `seu_tree.v` | SEU tree generator: FSM + LFSR for probability scoring |
+| `seu_tree.v` | SEU tree generator: FSM + LFSR, compact mode (4 variants × 4 levels, BRAM) |
 
 **SPPU Registers (BAR0, offset 0x00–0x2C):**
 
@@ -193,13 +193,13 @@ SPPU_project/
 |--------|------|-----|-------------|
 | `0x30` | SEU_CTRL | RW | SEU control: start (bit 0), reset (bit 1), irq_en (bit 2), tree_16b (bit 3) |
 | `0x34` | SEU_STATUS | RO | 0=READY, 1=BUSY, 2=DONE, 3=ERROR |
-| `0x38` | SEU_DEPTH | RW | Tree depth (5..8) |
+| `0x38` | SEU_DEPTH | RW | Tree depth (2..4, compact mode; HW не меняется) |
 | `0x3C` | SEU_OFFSET | RW | Branch offsets (packed, 32-bit per offset) |
 | `0x40` | SEU_TREE_ADDR | RW | Base address in vector memory for tree nodes |
 | `0x44` | SEU_TREE_RESULT | RW | Base address for tree result storage |
 | `0x48` | SEU_PROB_BASE | RW | Probability configuration base address |
 | `0x4C` | SEU_IRQ_STATUS | RW1C | SEU interrupt status |
-| `0x50` | SEU_PROB_READ_IDX | RW | Index for probability readback (0..127) |
+| `0x50` | SEU_PROB_READ_IDX | RW | Index for probability readback (0..15, compact mode) |
 | `0x54` | SEU_PROB_READBACK | RO | Probability value at index |
 | `0x58` | SEU_TREE_ENTRIES_TOTAL | RO | Total entries computed by SEU |
 
@@ -216,12 +216,15 @@ cd fpga && make synth
 ```
 
 **Pin mapping (`sppu_zynq7010.xdc`):**
-- `sys_clk` — pin E3, 50 MHz oscillator
-- `sys_rst_n` — pin C12, active-low
-- LEDs: H17, K15, J13, N14
-- UART (PL debug): TX=D10, RX=A9
-- SPI slave (vector data): SCK=B1, CSN=A1, MOSI=C1, MISO=C2
-- GPIO expansion: H1, G1
+- `sys_clk` — pin K17 (MRCC), 50 MHz oscillator
+- `sys_rst_n` — unconstrained (auto-assign)
+- LEDs: H17, K18, J14, M14, L16 (all PL-bank GPIO)
+- UART (PL debug): unconstrained (auto-assign)
+- PS-side pins (UART, SPI, GPIO0..1) removed from XDC — fabric cannot constrain PS MIO pads
+
+**Important:** Only PL-side pins (sys_clk, LEDs) have PACKAGE_PIN constraints.
+All PS MIO pins (UART, SPI, GPIO, sys_rst_n) are unconstrained and assigned by nextpnr.
+This is required because nextpnr-xilinx cannot place BELs on PS-side IOB33 tiles.
 
 For generic Artix-7, see `sppu_artix7.xdc` (adjust pins to your board schematic).
 
@@ -390,11 +393,13 @@ python3 sdk/python/examples/sppu_demo.py
 ## Прошивка FPGA (Zynq-7010, AntMiner XC7Z010 v1.0)
 
 ### Требования
-- Yosys (https://github.com/YosysHQ/yosys)
-- nextpnr-xilinx (https://github.com/YosysHQ/nextpnr, с поддержкой Xilinx 7-series)
-- prjxray-tools (`xc7frames2bit`) — для конвертации FASM → binary bitstream
-  (https://github.com/xray-prj/prjxray-tools)
+- Yosys ≥0.40 (https://github.com/YosysHQ/yosys)
+- nextpnr-xilinx (https://github.com/gatecat/nextpnr-xilinx, commit `8f178fc6`)
+- prjxray (https://github.com/SymbiFlow/prjxray) — `fasm2frames.py` для FASM → .bit
+- xc7frames2bit — из prjxray-tools (конвертация frames → .bit)
 - openFPGALoader (`apt install openfpgaloader` или собрать из исходников)
+- Python ≥3.8 с пакетами `fasm`, `prjxray` (pip-установка)
+- prjxray-db (https://github.com/SymbiFlow/prjxray-db) — база для xc7z010clg400-1
 - JTAG-адаптер (Digilent JTAG-HS3 или аналог)
 - Плата AntMiner XC7Z010 v1.0
 - Linux-система (для сборки и работы скриптов)
@@ -438,68 +443,95 @@ bba --le fpga/arch/xc7z010clg400-1/xc7z010clg400-1.bba \
 (описание кристалла из prjxray-db) используются bbaexport.py
 на этапе генерации. Подробнее — `fpga/arch/README.md`.
 
-### Автоматическая сборка и прошивка
+### Open-source сборка bitstream (Yosys + nextpnr-xilinx)
+
+Проект использует полностью открытый toolchain для 7-серии Xilinx:
+`Yosys → nextpnr-xilinx → fasm2frames.py → xc7frames2bit → .bit`
+
+#### Подготовка окружения
 
 ```bash
-# 1. Полная сборка bitstream (Yosys → nextpnr → fasm2bit → .bit)
-scripts/build_fpga.sh
+# 1. Установите prjxray и fasm2frames.py
+git clone --depth 1 https://github.com/SymbiFlow/prjxray.git /tmp/prjxray
+pip install --break-system-packages -e /tmp/prjxray fasm
 
-# 2. Прошивка FPGA через JTAG
-scripts/flash_jtag.sh
+# 2. Клонируйте prjxray-db (уже в /tmp/prjxray-db или скачайте)
+git clone --depth 1 https://github.com/SymbiFlow/prjxray-db.git /tmp/prjxray-db
 
-# 3. Сборка boot-образа для SD-карты
-scripts/create_boot.sh
+# 3. nextpnr-xilinx уже собран в репозитории (ветка xilinx-upstream, 8f178fc6)
+#    При необходимости пересобрать:
+#    cmake -S /tmp/gatecat-nextpnr -B /tmp/gatecat-nextpnr/build \
+#      -DARCH=xilinx -DBUILD_PYTHON=OFF -DUSE_OPENMP=OFF
+#    cmake --build /tmp/gatecat-nextpnr/build --target nextpnr-xilinx -j$(nproc)
 ```
 
-### Пошаговый workflow с нуля
+**Известные патчи в nextpnr-xilinx** (применены в `placer1.cc`):
+- Исправлен segfault в SA placer (`place_initial`): null-ptr dereference при rip-up
+  занятого BEL, не привязанного к клетке. Добавлена проверка `bound_cell != nullptr`.
+
+#### Сборка
 
 ```bash
-# === Шаг 1: Клонирование проекта ===
-git clone https://github.com/MrModelOS/SPPU_project.git
-cd SPPU_project
+cd fpga
 
-# === Шаг 2: Сборка bitstream ===
-# Используется открытый toolchain: Yosys → nextpnr-xilinx → FASM → BIT
-scripts/build_fpga.sh
-# Результат: fpga/build/sppu_zynq7010.bit
-#           fpga/build/sppu_pynq_top.fasm  (промежуточный текст bitstream)
+# 1. Полная сборка bitstream
+make bit
+# Результат: build/sppu_zynq7010.bit (2 MB)
 
-# === Шаг 3: Прошивка FPGA через JTAG ===
-# Подключите JTAG-адаптер к плате и компьютеру
-scripts/flash_jtag.sh
-# Или вручную:
-openFPGALoader -b digilent_a fpga/build/sppu_zynq7010.bit
+# 2. Или пошагово:
+make synth   # Yosys → JSON
+make fasm    # nextpnr place & route → FASM
+make bit     # FASM → .bit (fasm2frames.py + xc7frames2bit)
 
-# === Шаг 4: Сборка boot-образа для SD-карты ===
-scripts/create_boot.sh
-# Это создаст boot.bin (bitstream) в fpga/build/boot/
-# Для полной загрузки Linux требуется FSBL (Zynq Boot ROM загружает его)
-
-# === Шаг 5: Запись SD-карты и загрузка Linux ===
-# Определите устройство SD-карты:
-lsblk
-# Например, /dev/sdX
-
-# Записать boot.bin (первый сектор):
-sudo dd if=fpga/build/boot/boot.bin of=/dev/sdX bs=512 seek=0 conv=notrunc
-
-# Скопировать kernel (Image), device tree (.dtb) и rootfs
-sudo mount /dev/sdX1 /mnt
-sudo cp images/linux/Image /mnt/boot/
-sudo cp images/linux/devicetree.dtb /mnt/boot/
-sudo tar -xzf rootfs.tar.gz -C /mnt/
-sudo umount /mnt
-
-# === Шаг 6: Загрузка Linux-драйвера (на плате) ===
-# После включения платы с SD-картой:
-insmod kernel_module/sppu_driver.ko emulation=0
-ls -la /dev/sppu
-
-# === Или эмуляция без FPGA (для тестирования стека) ===
+# 3. Прошивка через JTAG
+make program
 ```
-insmod kernel_module/sppu_driver.ko emulation=1
-./tools/sppu_search --generate 5000 128 --db vectors.csv
+
+#### Вручную
+
+```bash
+# 1. Yosys synthesis
+yosys -p 'read_verilog rtl/sppu_regs.v; read_verilog rtl/sppu_dotprod.v;
+         read_verilog rtl/sppu_dma.v; read_verilog rtl/sppu_vecmem.v;
+         read_verilog rtl/seu_tree.v; read_verilog rtl/sppu_top.v;
+         read_verilog rtl/sppu_pynq_top.v;
+         synth_xilinx -top sppu_pynq -family xc7; write_json build/sppu_pynq_top.json'
+
+# 2. nextpnr place & route
+nextpnr-xilinx --chipdb arch/xc7z010clg400-1/chipdb.bin \
+  --xdc constraints/sppu_zynq7010.xdc \
+  --json build/sppu_pynq_top.json \
+  --fasm build/sppu_pynq_top.fasm \
+  --placer heap --router router2 --timing-allow-fail
+
+# 3. FASM → .bit
+python3 /tmp/prjxray/utils/fasm2frames.py \
+  --db-root /tmp/prjxray-db/zynq7 \
+  --part xc7z010clg400-1 \
+  build/sppu_pynq_top.fasm build/sppu_pynq_top.frames
+xc7frames2bit --part_file arch/xc7z010clg400-1/part.yaml \
+  --part_name xc7z010clg400-1 \
+  --frm_file build/sppu_pynq_top.frames \
+  --output_file build/sppu_zynq7010.bit
+
+# 4. Прошивка FPGA через JTAG
+openFPGALoader -b digilent_a build/sppu_zynq7010.bit
 ```
+
+#### Результаты сборки
+
+| Конфигурация | SEU | Ячейки | Тайминг | Размер .bit |
+|-------------|-----|--------|---------|-------------|
+| Без SEU | заглушка | 3440 | 81-117 MHz | 2.0 MB |
+| С SEU (4×4) | упрощённый | 6952 | 53-63 MHz | 2.0 MB |
+
+#### Известные проблемы
+
+- **SEU full mode (16×8)**: heap placer не находит законного размещения для ~13000 FF
+  SEU-модуля; SA placer segfault. Решение: compact mode 4 варианта × 4 уровня.
+- **SA placer segfault**: исправлен в локальной сборке (null-ptr в `place_initial`).
+- **Wire integrity warning**: `wire != wire2, name = INT_L_X0Y99/ER1BEG_S0` — нефатально,
+  P&R успешен.
 
 ### Вручную без PetaLinux (минимальный boot.bin)
 
@@ -534,8 +566,8 @@ sudo dd if=boot.bin of=/dev/sdX bs=512 seek=0 conv=notrunc
 - Linux (для kernel module и `/dev/sppu`)
 - GCC с поддержкой C11
 - Icarus Verilog (для симуляции FPGA)
-- Vivado (для синтеза на Zynq-7010)
-- Python 3.8+ (для Python SDK, необязательно)
+- Yosys + nextpnr-xilinx (для открытого синтеза, необязательно, альтернатива Vivado)
+- Python 3.8+ (для Python SDK и FASM-конвертации)
 - Никаких внешних библиотек (кроме libc)
 
 ---
@@ -562,6 +594,12 @@ sudo dd if=boot.bin of=/dev/sdX bs=512 seek=0 conv=notrunc
 - [x] PYNQ / Zynq PS integration (AXI-Lite bridge, LED status, sppu_pynq_top.v)
 - [x] Python SDK bindings (ctypes/libsppu wrapper, sppu.Python package)
 - [x] SEU: runtime probability profiling (PROB_READ_IDX / PROB_READBACK / TREE_ENTRIES_TOTAL)
+- [x] v0.4: Open-source FPGA toolchain (Yosys + nextpnr-xilinx + prjxray)
+- [x] v0.4: nextpnr-xilinx SA placer null-ptr fix (placer1.cc)
+- [x] v0.4: SEU compact mode (4×4, BRAM) для pack/place/routing в открытом toolchain
+- [x] v0.4: chipdb для xc7z010clg400-1 (bbasm + prjxray-db)
+- [x] v0.4: FASM → BIT pipeline (fasm2frames.py + xc7frames2bit)
+- [ ] SEU full mode (16×8) в открытом toolchain
 
 ---
 
